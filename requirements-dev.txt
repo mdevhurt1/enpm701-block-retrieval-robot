@@ -1,0 +1,19 @@
+# requirements-dev.txt
+# Development and test dependencies.
+# Install with: pip install -r requirements-dev.txt
+#
+# NOTE: hardware-only deps (RPi.GPIO, serial, picamera2, libcamera) are mocked
+# by tests/__init__.py and are NOT listed here - they are installed separately
+# on the Pi itself.
+
+# Test runner
+pytest>=9.0.2
+
+# Numerical / scientific (used by ekf.py, vision.py, navigation.py, qr_detection.py)
+numpy>=2.4.2
+
+# Computer-vision (used by vision.py, qr_detection.py, state_machine.py)
+# On dev machines where no C library is available, cv2 is mocked by
+# tests/__init__.py - tests still pass.  Install the full package only if
+# you need to run non-test vision code on a Pi or workstation with OpenCV.
+opencv-python-headless>=4.10.0
