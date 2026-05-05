@@ -80,6 +80,28 @@ def test_is_valid_point_outside_bounds():
     assert not loc.is_valid_point(arena.ARENA_WIDTH_CM, arena.ARENA_HEIGHT_CM)
 
 
+def test_is_valid_point_extra_margin_shrinks_envelope():
+    # Without extra_margin, a point near the edge of the safe envelope
+    # is valid. With extra_margin large enough to cross that edge, the
+    # same point becomes invalid. This is the path move_reverse uses to
+    # buffer reverses against odometry drift.
+    loc = Localizer()
+    # 1 cm inside the north safe boundary - valid by default.
+    edge_point_y = arena.ARENA_NORTH_WALL_Y_CM - 15.0 - 20.0 - 1.0
+    assert loc.is_valid_point(100.0, edge_point_y)
+    # Adding 5 cm extra margin pushes the point outside the shrunken envelope.
+    assert not loc.is_valid_point(100.0, edge_point_y, extra_margin=5.0)
+
+
+def test_is_valid_point_extra_margin_default_is_zero():
+    # Regression guard: existing call sites pass no extra_margin and must
+    # see identical behaviour to before.
+    loc = Localizer()
+    pt_x = arena.ARENA_WIDTH_CM / 2
+    pt_y = arena.ARENA_HEIGHT_CM / 2
+    assert loc.is_valid_point(pt_x, pt_y) == loc.is_valid_point(pt_x, pt_y, extra_margin=0.0)
+
+
 def test_apply_forward_south():
     loc = Localizer()
     loc.set_position(0.0, 10.0)

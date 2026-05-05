@@ -1,12 +1,14 @@
+import logging
 import math
-import sys
 import time
-from typing import Optional
+from typing import Iterable, Optional
 
 from fp import arena
 from fp import hal
 from fp import vision
-from fp.localization import Localizer
+from fp.localization import Localizer, ROBOT_HALF_EXTENT_CM
+
+logger = logging.getLogger(__name__)
 
 class TargetDetected(Exception):
     """Raised when a drive is aborted because the target color is visible."""
@@ -20,39 +22,54 @@ class ApproachVisualStuck(Exception):
 
 
 # Tuning constants
-LOOP_SLEEP_S = 0.05
+LOOP_SLEEP_S = 0.025
 
 # Drive tuning constants
-STALL_TIMEOUT_S = 1.5
+STALL_TIMEOUT_S = 1.0
 DRIVE_AROUND_LATERAL_CM = 30.0
 DRIVE_AROUND_MAX_DEPTH  = 2
-HEADING_HOLD_KP = 2.0
+HEADING_HOLD_KP = 1.0
 MAX_HEADING_CORRECTION = 25.0
 DRIVE_DEADLINE_MIN_S = 4.0
 DRIVE_DEADLINE_PER_CM_S = 0.25
-REVERSE_DISTANCE_CM = 15.0
-REVERSE_REPLAN_ATTEMPTS = 4
+REVERSE_DISTANCE_CM = 10.0
+REVERSE_REPLAN_ATTEMPTS = 1
+# Reverses get a tighter validation envelope than forward moves: the
+# ultrasonic only sees forward, so the rear has no live sensing, and
+# observed odometry drift (the y-axis-stuck-south failure mode) means
+# is_valid_point's odometry-based bounds can pass a reverse that
+# physically lands at the wall. This extra margin is shaved off both
+# sides of the safe rectangle when validating reverse endpoints.
+REVERSE_EXTRA_MARGIN_CM = 10.0
 
 # Pivot tuning constants
-MAX_PIVOT_ATTEMPTS      = 4
-SLOWDOWN_THRESHOLD_DEG  = 45.0
+MAX_PIVOT_ATTEMPTS      = 3
+SLOWDOWN_THRESHOLD_DEG  = 35.0
 MIN_PIVOT_DUTY          = 25.0
 PIVOT_DEADLINE_S        = 6.0
-TIME_BETWEEN_PIVOTS     = 0.5
+TIME_BETWEEN_PIVOTS     = 0.3
 HEADING_TOLERANCE       = 1.0
 
 # Localization tuning constants
 MAX_LOCALIZATION_RANGE_CM = 50.0
-SWEEP_RANGE_DEG           = 20
-SWEEP_STEP_DEG            = 5
+SWEEP_RANGE_DEG           = 30
+SWEEP_STEP_DEG            = 10
 SWEEP_SAMPLES             = 3
 MAX_VALID_SENSOR_CM       = 60.0
-MIN_VALID_SENSOR_CM       = 5.0
+MIN_VALID_SENSOR_CM       = 10.0
 WALL_FIT_MAX_RMS_CM       = 3.0
+# Must remain <= SWEEP_RANGE_DEG and ideally well below it: a fit whose
+# theta_perp lies near or beyond the geometric edge of the sweep is
+# extrapolating, not interpolating, and is typically a corner-confusion
+# artifact rather than a real wall measurement.
+WALL_FIT_HEADING_GATE_DEG       = 15.0
+HEADING_RECAL_GATE_DEG          = 10.0
+MIN_TIME_BETWEEN_LOCALIZATIONS  = 20.0
 
 # Visual approach tuning constants
 APPROACH_LARGEST_STEP       = 20.0
-VISUAL_APPROACH_TOLERANCE   = 2.0
+VISUAL_APPROACH_TOLERANCE   = 1.0
+VISUAL_APPROACH_STEER_GAIN = 0.85
 
 # Internal helper functions
 
@@ -60,10 +77,10 @@ def _drive(localizer: Localizer, distance_cm: float, initial_heading: float,
            direction: int, target: str = None, visual_approach: bool = False, 
            carrying_block: bool = False) -> bool:
     if direction not in (+1, -1):
-        print(f"[MOTION] _drive: invalid direction {direction}")
+        logger.info(f"[MOTION] _drive: invalid direction {direction}")
         return False
     
-    print(f"[MOTION] _drive {distance_cm:.1f} cm direction {direction:+d}")
+    logger.info(f"[MOTION] _drive {distance_cm:.1f} cm direction {direction:+d}")
 
     if localizer.tracker is not None:
         localizer.tracker.start_segment()
@@ -92,7 +109,7 @@ def _drive(localizer: Localizer, distance_cm: float, initial_heading: float,
             last_average = average
             
             current_heading = hal.get_heading()
-            # print(f"  Front Left: {counter_left} Front Right: {counter_right}  total distance: {average / hal.COUNTS_PER_CM:.1f} cm heading: {current_heading:.1f}", end="\r", flush=True)
+            localizer.set_heading(current_heading)
             if direction == +1:
                 localizer.apply_forward(delta_cm, current_heading)
             else:
@@ -101,10 +118,10 @@ def _drive(localizer: Localizer, distance_cm: float, initial_heading: float,
             if average >= target_counts:
                 return True
             
-            if hal.is_ultrasonic_healthy():
-                ultrasonic_distance = hal.get_ultrasonic_distance()
-            else:
-                ultrasonic_distance = None
+            # Median of the rolling buffer instead of a raw read - one stuck-high
+            # or missed-echo sample would otherwise look like a near-wall return
+            # and trip the two-consecutive-readings abort below.
+            ultrasonic_distance = _buffered_ultrasonic_median()
 
             if direction == +1:
                 if ultrasonic_distance is not None and localizer.ultrasonic_reading_inside_robot_radius(ultrasonic_distance, current_heading):
@@ -112,7 +129,7 @@ def _drive(localizer: Localizer, distance_cm: float, initial_heading: float,
                 else:
                     wall_trigger_count = 0
                 if wall_trigger_count >= 2:
-                    print(f"[MOTION] _drive wall too close ({wall_trigger_count} consecutive readings), reading: {ultrasonic_distance:.1f} cm at ({localizer.pose.x_cm:.1f}, {localizer.pose.y_cm:.1f}, {localizer.pose.heading:.1f}), aborting drive")
+                    logger.info(f"[MOTION] _drive wall too close ({wall_trigger_count} consecutive readings), reading: {ultrasonic_distance:.1f} cm at ({localizer.pose.x_cm:.1f}, {localizer.pose.y_cm:.1f}, {localizer.pose.heading:.1f}), aborting drive")
 
                     hal.stop_motors()
 
@@ -138,9 +155,6 @@ def _drive(localizer: Localizer, distance_cm: float, initial_heading: float,
                             if carrying_block:
                                 continue
                             
-                            if target_detection.within_reach:
-                                raise TargetDetected(target_detection)
-                            
                             if visual_approach:
                                 continue
 
@@ -157,7 +171,7 @@ def _drive(localizer: Localizer, distance_cm: float, initial_heading: float,
                             continue
 
                         if detection.block_too_close:
-                            print(f"[MOTION] _drive camera abort: {color} block too close, size={detection.area:.1f}")
+                            logger.info(f"[MOTION] _drive camera abort: {color} block too close, size={detection.area:.1f}")
                             hal.stop_motors()
                             backoff_result = move_reverse(localizer)
                             return False
@@ -166,7 +180,7 @@ def _drive(localizer: Localizer, distance_cm: float, initial_heading: float,
                 last_total = current_total
                 last_progress_t = time.monotonic()
             elif time.monotonic() - last_progress_t > STALL_TIMEOUT_S:
-                print(f"[MOTION] _drive stall detected: no encoder progress ({counter_left} L, {counter_right} R) for {time.monotonic() - last_progress_t:.1f} s")
+                logger.info(f"[MOTION] _drive stall detected: no encoder progress ({counter_left} L, {counter_right} R) for {time.monotonic() - last_progress_t:.1f} s")
                 return False
 
             
@@ -201,10 +215,25 @@ def _pivot_to_heading(localizer: Localizer, target_heading: float) -> bool:
     right_direction = direction * -1
     full_duty = float(hal.PWM_DUTY_TURN)
     deadline = time.monotonic() + PIVOT_DEADLINE_S
+    wall_trigger_count = 0
 
     try:
         while time.monotonic() < deadline:
             localizer.set_heading(hal.get_heading())
+            ultrasonic_distance = _buffered_ultrasonic_median()
+
+            if ultrasonic_distance is not None and localizer.ultrasonic_reading_inside_robot_radius(ultrasonic_distance, localizer.pose.heading):
+                wall_trigger_count += 1
+            else:
+                wall_trigger_count = 0
+            if wall_trigger_count >= 2:
+                logger.info(f"[MOTION] _pivot wall too close ({wall_trigger_count} consecutive readings), reading: {ultrasonic_distance:.1f} cm at ({localizer.pose.x_cm:.1f}, {localizer.pose.y_cm:.1f}, {localizer.pose.heading:.1f}), aborting pivot")
+
+                hal.stop_motors()
+                move_reverse(localizer)
+                localize(localizer, force=localizer.pose.heading)
+                return False
+                
             error = ((target_heading - localizer.pose.heading) + 180) % 360 - 180
             absolute_error = abs(error)
             if absolute_error <= HEADING_TOLERANCE or (error * direction < 0):
@@ -229,13 +258,18 @@ def move_reverse(localizer: Localizer) -> bool:
 
     for i in range(REVERSE_REPLAN_ATTEMPTS):
         x, y = arena.apply_motion(localizer.pose.x_cm, localizer.pose.y_cm, -distance_cm, localizer.pose.heading)
-        if localizer.is_valid_point(x, y):
+        # Tighter validation than forward moves: shrink the safe envelope
+        # by REVERSE_EXTRA_MARGIN_CM. Reverses run blind (no rear sensor)
+        # and odometry drift accumulates between localizations - without
+        # the buffer, a "valid" 5 cm reverse can physically land on the
+        # wall when the real pose is already nearer than the estimate.
+        if localizer.is_valid_point(x, y, extra_margin=REVERSE_EXTRA_MARGIN_CM):
             break
-        print(f"[MOTION] move_reverse Backup {distance_cm:.1f} cm from ({localizer.pose.x_cm:.1f}, {localizer.pose.y_cm:.1f}) heading {localizer.pose.heading:.1f} deg would put robot into invalid position ({x:.1f}, {y:.1f}), skipping")
+        logger.info(f"[MOTION] move_reverse Backup {distance_cm:.1f} cm from ({localizer.pose.x_cm:.1f}, {localizer.pose.y_cm:.1f}) heading {localizer.pose.heading:.1f} deg would put robot into invalid position ({x:.1f}, {y:.1f}) [margin={REVERSE_EXTRA_MARGIN_CM:.0f}cm], skipping")
         distance_cm = distance_cm - (REVERSE_DISTANCE_CM / REVERSE_REPLAN_ATTEMPTS)
 
     if distance_cm <= 0:
-        print(f"[MOTION] move_reverse: no valid backup distance, cannot reverse")
+        logger.info(f"[MOTION] move_reverse: no valid backup distance, cannot reverse")
         return False
 
     _drive(localizer, distance_cm, localizer.pose.heading, -1)
@@ -260,17 +294,17 @@ def move_to_point(localizer: Localizer, x_cm: float, y_cm: float,
     dx = x_cm - localizer.pose.x_cm
     dy = y_cm - localizer.pose.y_cm
     if abs(dx) <= 1e-3 and abs(dy) <= 1e-3:
-        print("[MOTION] move_to_point Within tolerance of point")
+        logger.info("[MOTION] move_to_point Within tolerance of point")
         return True
     heading = math.degrees(math.atan2(dx, dy)) % 360
     distance = math.hypot(dx, dy)
 
     result = pivot_to_heading(localizer, heading)
     if not result:
-        print(f"[MOTION] move_to_point pivot not ok")
+        logger.info(f"[MOTION] move_to_point pivot not ok")
         return False
     try:
-        print(f"[MOTION] move_to_point target ({x_cm:.1f}, {y_cm:.1f}), distance ({distance:.1f}, heading {heading:.1f})")
+        logger.info(f"[MOTION] move_to_point target ({x_cm:.1f}, {y_cm:.1f}), distance ({distance:.1f}, heading {heading:.1f})")
         result = _drive(localizer, distance, heading, +1, target=target, carrying_block=carrying_block)
     except TargetDetected as e:
         raise e
@@ -301,12 +335,12 @@ def move_to_point(localizer: Localizer, x_cm: float, y_cm: float,
         move_to_point(localizer, wx, wy, target=target, carrying_block=carrying_block, navigation_retries=(navigation_retries - 1))
         result = move_to_point(localizer, x_cm, y_cm, target=target, carrying_block=carrying_block, navigation_retries=(navigation_retries - 1))
 
-    print(f"[MOTION] move_to_point returning from {navigation_retries} with {result}")
+    logger.info(f"[MOTION] move_to_point returning from {navigation_retries} with {result}")
     return result
 
 
 def grab_block(localizer: Localizer, color: str) -> bool:
-    print(f"[MOTION] grab block {color}")
+    logger.info(f"[MOTION] grab block {color}")
 
     hal.gripper_close()
     time.sleep(0.5)
@@ -316,25 +350,30 @@ def grab_block(localizer: Localizer, color: str) -> bool:
     det = vision.detect_block(target=color)
 
     if det is None or not det.within_reach:
-        print(f"[MOTION] grap_block may have failed: {color} block not within reach after grab attempt at ({localizer.pose.x_cm:.1f}, {localizer.pose.y_cm:.1f})")
+        logger.info(f"[MOTION] grap_block may have failed: {color} block not within reach after grab attempt at ({localizer.pose.x_cm:.1f}, {localizer.pose.y_cm:.1f})")
         hal.gripper_open()
         return False
     
-    print(f"[MOTION] grab_block appears successful: {color} block within reach after grab attempt at ({localizer.pose.x_cm:.1f}, {localizer.pose.y_cm:.1f})")
+    logger.info(f"[MOTION] grab_block appears successful: {color} block within reach after grab attempt at ({localizer.pose.x_cm:.1f}, {localizer.pose.y_cm:.1f})")
     return True
 
 
 def release_block(localizer: Localizer) -> bool:
-    print("[MOTION] release block")
+    logger.info("[MOTION] release block")
 
     hal.gripper_open()
     time.sleep(0.5)
     move_reverse(localizer)
     return True
 
-
-def localize(localizer: Localizer, force: float = None) -> bool:
-    print(f"[MOTION] localize: checking for nearby walls from pose ({localizer.pose.x_cm:.1f}, {localizer.pose.y_cm:.1f})")
+_last_localization = 0.0
+def localize(localizer: Localizer, force: float = None, bypass_cooldown: bool = False) -> bool:
+    logger.info(f"[MOTION] localize: checking for nearby walls from pose ({localizer.pose.x_cm:.1f}, {localizer.pose.y_cm:.1f}) bypass_cooldown={bypass_cooldown}")
+    global _last_localization
+    time_since_last_localization = time.monotonic() - _last_localization
+    if not bypass_cooldown and time_since_last_localization < MIN_TIME_BETWEEN_LOCALIZATIONS:
+        logger.info(f"[MOTION] localize: Already recently localized {time_since_last_localization:.1f} s ago")
+        return True
 
     if force is not None:
         heading_mod = force % 360
@@ -346,6 +385,30 @@ def localize(localizer: Localizer, force: float = None) -> bool:
             wall = "south"
         else:
             wall = "west"
+
+        # Sanity-check the wall is plausibly in sensor range. force=heading
+        # is called from wall-too-close handlers in _drive / _pivot_to_heading
+        # that fired on an ultrasonic ping, but the ping might have been a
+        # block, not a wall. Without this guard, _get_wall_distance accepts
+        # whatever clearance the (possibly mirror-fit / fallback-argmin)
+        # sweep returns, and localize then snaps the position estimate to it
+        # - a 115 cm y-teleport observed in the field traced back to a
+        # forced south-wall localize at y=165 with the actual south wall
+        # well beyond sensor range. If our own odometry says the implied
+        # wall is past MAX_VALID_SENSOR_CM + ROBOT_HALF_EXTENT_CM, the
+        # ping wasn't the wall - skip the snap.
+        if wall == "north":
+            expected_wall_distance = arena.ARENA_NORTH_WALL_Y_CM - localizer.pose.y_cm
+        elif wall == "south":
+            expected_wall_distance = localizer.pose.y_cm
+        elif wall == "east":
+            expected_wall_distance = arena.ARENA_EAST_WALL_X_CM - localizer.pose.x_cm
+        else:  # west
+            expected_wall_distance = localizer.pose.x_cm
+
+        if expected_wall_distance > MAX_VALID_SENSOR_CM + ROBOT_HALF_EXTENT_CM:
+            logger.info(f"[MOTION] localize: skip force={force:.0f}; {wall} wall implied at {expected_wall_distance:.0f} cm from estimated pose, beyond sensor range ({MAX_VALID_SENSOR_CM + ROBOT_HALF_EXTENT_CM:.0f} cm)")
+            return False
 
         dist = _get_wall_distance(localizer, wall)
         if dist is None:
@@ -360,6 +423,7 @@ def localize(localizer: Localizer, force: float = None) -> bool:
         elif wall == "north":
             localizer.set_position(localizer.pose.x_cm, arena.ARENA_NORTH_WALL_Y_CM - dist)
 
+        _last_localization = time.monotonic()
         return True
 
     x_wall = None
@@ -369,7 +433,7 @@ def localize(localizer: Localizer, force: float = None) -> bool:
         x_wall = "east"
 
     if x_wall is None:
-        print(f"[MOTION] localize: sensor None in x direction, skipping x localization")
+        logger.info(f"[MOTION] localize: sensor None in x direction, skipping x localization")
 
     y_wall = None
     if (localizer.pose.y_cm < MAX_LOCALIZATION_RANGE_CM):
@@ -378,7 +442,7 @@ def localize(localizer: Localizer, force: float = None) -> bool:
         y_wall = "north"
 
     if y_wall is None:
-        print(f"[MOTION] localize: sensor None in y direction, skipping y localization")
+        logger.info(f"[MOTION] localize: sensor None in y direction, skipping y localization")
 
     if x_wall is None and y_wall is None:
         return False
@@ -401,28 +465,52 @@ def localize(localizer: Localizer, force: float = None) -> bool:
         localizer.set_position(localizer.pose.x_cm, arena.ARENA_NORTH_WALL_Y_CM - y)
         updated = True
 
+    if updated:
+        _last_localization = time.monotonic()
+    
     return updated
 
-def _read_ultrasonic_median() -> Optional[float]:
-    """Median of SWEEP_SAMPLES gated readings, or None if every sample was rejected.
+def _median_in_range(samples: Iterable[float]) -> Optional[float]:
+    """Median of samples that fall within (MIN_VALID_SENSOR_CM, MAX_VALID_SENSOR_CM).
 
-    Median (not mean) survives the dominant HC-SR04 failure mode: a single
-    reading near 0 cm from a missed echo or near 340 cm from a stuck-high
-    echo. Either would otherwise pull the mean by ~30 percent and, more
-    critically, blow up the 1/r linearisation used by _fit_wall_geometry.
+    Returns None if no sample survives gating. Median (not mean) survives the
+    dominant HC-SR04 failure modes (~0 cm on missed echo, ~340 cm on stuck-high
+    echo) which would otherwise pull the mean by ~30 percent and blow up the
+    1/r linearisation used by _fit_wall_geometry.
+    """
+    survivors = [d for d in samples if MIN_VALID_SENSOR_CM < d < MAX_VALID_SENSOR_CM]
+    if not survivors:
+        return None
+    survivors.sort()
+    return survivors[len(survivors) // 2]
+
+
+def _read_ultrasonic_median() -> Optional[float]:
+    """Trigger SWEEP_SAMPLES fresh ultrasonic reads (sleeping between each so the
+    background ping thread refreshes) and return the gated median.
+
+    Use this after a fresh pivot, where stale buffer contents would reflect the
+    pre-pivot pose. For inline use during a drive, where blocking on extra
+    sleeps is unwanted, use _buffered_ultrasonic_median instead.
     """
     samples = []
     for _ in range(SWEEP_SAMPLES):
         time.sleep(LOOP_SLEEP_S)
-        if not hal.is_ultrasonic_healthy():
-            continue
-        d = hal.get_ultrasonic_distance()
-        if MIN_VALID_SENSOR_CM < d < MAX_VALID_SENSOR_CM:
-            samples.append(d)
-    if not samples:
+        if hal.is_ultrasonic_healthy():
+            samples.append(hal.get_ultrasonic_distance())
+    return _median_in_range(samples)
+
+
+def _buffered_ultrasonic_median() -> Optional[float]:
+    """Gated median of the rolling-buffer samples maintained by the HAL ping thread.
+
+    Cheaper than _read_ultrasonic_median (no sleep) but only meaningful when the
+    robot has been moving smoothly long enough for the buffer to reflect current
+    pose. Drops the rare 0 cm / 340 cm outliers without slowing the caller's loop.
+    """
+    if not hal.is_ultrasonic_healthy():
         return None
-    samples.sort()
-    return samples[len(samples) // 2]
+    return _median_in_range(hal.get_recent_ultrasonic_readings())
 
 
 def _fit_wall_geometry(thetas_deg: list, ranges_cm: list) -> Optional[tuple]:
@@ -517,7 +605,7 @@ def _get_wall_distance(localizer: Localizer, wall: str) -> float:
     known_heading = float(headings[wall])
 
     if not pivot_to_heading(localizer, known_heading):
-        print(f"[MOTION] _get_wall_distance: initial pivot failed for {wall} wall")
+        logger.info(f"[MOTION] _get_wall_distance: initial pivot failed for {wall} wall")
         return None
 
     time.sleep(LOOP_SLEEP_S)
@@ -539,55 +627,95 @@ def _get_wall_distance(localizer: Localizer, wall: str) -> float:
             sweep_ranges.append(median)
 
     if not sweep_ranges:
-        print(f"[MOTION] _get_wall_distance: no valid readings during sweep for {wall} wall")
+        logger.info(f"[MOTION] _get_wall_distance: no valid readings during sweep for {wall} wall")
         return None
+
+    # Per-beam dump is the first thing to look at when a fit gets rejected as
+    # ill-conditioned or rms-too-high - a glance tells you whether the pivots
+    # actually moved (theta spread), how many readings survived gating, and
+    # whether the range pattern matches the cos shape we expect.
+    logger.info(f"[MOTION] _get_wall_distance: {wall} sweep ({len(sweep_ranges)} readings): "
+                + ", ".join(f"{t:.0f}deg/{r:.0f}cm" for t, r in zip(sweep_thetas, sweep_ranges)))
 
     fit = _fit_wall_geometry(sweep_thetas, sweep_ranges)
 
-    if fit is not None:
+    reject_reason = None
+    if fit is None:
+        reject_reason = "ill-conditioned"
+    else:
         d_cm, theta_perp, rms = fit
-        if rms <= WALL_FIT_MAX_RMS_CM:
-            # Pivot to the fitted perpendicular and snap the IMU offset to the
-            # cardinal. The wall is rigid and never drifts, so the difference
-            # (theta_perp - known_heading) is an honest IMU-drift estimate;
-            # previously this call zeroed whatever heading we happened to land on.
-            pivot_to_heading(localizer, theta_perp)
-            time.sleep(LOOP_SLEEP_S)
+        drift = ((theta_perp - known_heading) + 180.0) % 360.0 - 180.0
+        # Mirror-fit guard: the model r(theta) = d/cos(theta - theta_perp) is
+        # symmetric under theta_perp += 180, so a fit that lands on the wrong
+        # half of the unit circle can match the data with low residual but
+        # describes a wall in the opposite direction. The robot was just
+        # pivoted to known_heading at the start of this routine, so theta_perp
+        # should be within a sweep-width of it; anything farther is the mirror.
+        if abs(drift) >= WALL_FIT_HEADING_GATE_DEG:
+            reject_reason = (f"theta_perp={theta_perp:.1f} differs from known "
+                             f"{known_heading:.1f} by {drift:+.1f} (mirror-fit)")
+        elif rms > WALL_FIT_MAX_RMS_CM:
+            reject_reason = f"rms={rms:.2f} cm exceeds {WALL_FIT_MAX_RMS_CM:.1f} cm"
 
-            drift = ((theta_perp - known_heading) + 180.0) % 360.0 - 180.0
+    if reject_reason is None:
+        # Pivot to the fitted perpendicular regardless. Whether we then snap
+        # the IMU offset to the cardinal depends on how much we trust the
+        # drift signal: small drifts are real IMU bias and worth correcting;
+        # large drifts (~20+ deg) observed in the field were corner-confused
+        # fits whose recalibration injected bogus offset into the IMU. Gate
+        # the recalibration on |drift| < HEADING_RECAL_GATE_DEG. The returned
+        # clearance is correct in either case since d is the wall-perpendicular
+        # distance and stands on its own.
+        pivot_to_heading(localizer, theta_perp)
+        time.sleep(LOOP_SLEEP_S)
+
+        if abs(drift) < HEADING_RECAL_GATE_DEG:
             hal.recalibrate_heading(known_heading)
             localizer.set_heading(known_heading)
+            recal_note = "recal"
+        else:
+            recal_note = f"recal skipped (|drift|>={HEADING_RECAL_GATE_DEG:.0f})"
 
-            clearance = localizer.ultrasonic_to_robot_center(d_cm, known_heading)
-            print(f"[MOTION] _get_wall_distance: {wall} wall fit d={d_cm:.1f} cm, "
-                  f"theta_perp={theta_perp:.1f}, drift={drift:+.1f}, "
-                  f"rms={rms:.2f} cm, clearance={clearance:.1f} cm")
-            return clearance
-        print(f"[MOTION] _get_wall_distance: {wall} wall fit rms {rms:.2f} cm exceeds "
-              f"{WALL_FIT_MAX_RMS_CM:.1f} cm; falling back to argmin")
-    else:
-        print(f"[MOTION] _get_wall_distance: {wall} wall fit ill-conditioned; falling back to argmin")
+        clearance = localizer.ultrasonic_to_robot_center(d_cm, known_heading)
+        logger.info(f"[MOTION] _get_wall_distance: {wall} wall fit d={d_cm:.1f} cm, "
+              f"theta_perp={theta_perp:.1f}, drift={drift:+.1f}, "
+              f"rms={rms:.2f} cm, clearance={clearance:.1f} cm, {recal_note}")
+        return clearance
+
+    logger.info(f"[MOTION] _get_wall_distance: {wall} wall fit rejected ({reject_reason}); "
+          f"falling back to argmin")
 
     # Fallback covers the cases the fit refuses (corner echoes, sweeps where
-    # cos and sin are not separable, geometrically impossible solutions).
-    # The FSM still owes itself a best-effort answer, so we re-aim at the
-    # smallest sweep reading and re-sample there - same behaviour as before.
+    # cos and sin are not separable, geometrically impossible solutions, or
+    # mirror-fits). The FSM still owes itself a best-effort answer, so we
+    # re-aim at the smallest sweep reading and re-sample there.
     best_idx = min(range(len(sweep_ranges)), key=lambda i: sweep_ranges[i])
     perp_imu_heading = sweep_thetas[best_idx]
+    fallback_drift = ((perp_imu_heading - known_heading) + 180.0) % 360.0 - 180.0
     pivot_to_heading(localizer, perp_imu_heading)
     time.sleep(LOOP_SLEEP_S)
 
-    print(f"[MOTION] _get_wall_distance: updating heading from backup: {perp_imu_heading:.1f} to {known_heading:.1f}")
-    hal.recalibrate_heading(known_heading)
-    localizer.set_heading(known_heading)
+    logger.info(f"[MOTION] _get_wall_distance: updating heading from backup: {perp_imu_heading:.1f} to {known_heading:.1f}")
+    # The fallback runs precisely when fit confidence is low (corner-confused
+    # geometry, ill-conditioned sweep, mirror-fit), so slamming the IMU off
+    # whatever argmin angle we landed on is the same trust failure we want
+    # to avoid. Gate the recalibration on |fallback_drift| symmetrically with
+    # the success branch.
+    if abs(fallback_drift) < HEADING_RECAL_GATE_DEG:
+        hal.recalibrate_heading(known_heading)
+        localizer.set_heading(known_heading)
+        recal_note = "recal"
+    else:
+        recal_note = f"recal skipped (|drift|>={HEADING_RECAL_GATE_DEG:.0f})"
 
     final_reading = _read_ultrasonic_median()
     if final_reading is None:
-        print(f"[MOTION] _get_wall_distance: {wall} wall no valid reading at fallback perpendicular")
+        logger.info(f"[MOTION] _get_wall_distance: {wall} wall no valid reading at fallback perpendicular")
         return None
 
     clearance = localizer.ultrasonic_to_robot_center(final_reading, known_heading)
-    print(f"[MOTION] _get_wall_distance: {wall} wall fallback reading {final_reading:.1f} cm, clearance {clearance:.1f} cm")
+    logger.info(f"[MOTION] _get_wall_distance: {wall} wall fallback reading {final_reading:.1f} cm, "
+                f"drift={fallback_drift:+.1f}, clearance={clearance:.1f} cm, {recal_note}")
     return clearance
 
 def approach_visual(localizer: Localizer, target: str,
@@ -597,24 +725,24 @@ def approach_visual(localizer: Localizer, target: str,
 
     while time.monotonic() <= deadline:
         if arena.in_collection_zone(localizer.pose.x_cm, localizer.pose.y_cm):
-            print(f"[MOTION] approach_visual inside collection zone; aborting")
+            logger.info(f"[MOTION] approach_visual inside collection zone; aborting")
             return False
 
         target_detection = vision.detect_block(target)
         if target_detection is None:
-            print(f"[MOTION] approach_visual did not detect {target} block")
+            logger.info(f"[MOTION] approach_visual did not detect {target} block")
             return False
 
+        steer_deg = (vision.CAMERA_HFOV_DEG  / vision.SENSOR_RESOLUTION[0]) * target_detection.centroid_error * VISUAL_APPROACH_STEER_GAIN
+        steer_heading = (localizer.pose.heading + steer_deg) % 360
+
         if target_detection.within_reach:
-            print(f"[MOTION] approach_visual reached {target} block")
             return True
 
-        steer_deg = (vision.CAMERA_HFOV_DEG  / vision.SENSOR_RESOLUTION[0]) * target_detection.centroid_error
-        steer_heading = (localizer.pose.heading + steer_deg) % 360
         fraction_remaining = 1.0 - target_detection.area / vision.IN_REACH_TOLERANCE[target]
         distance_cm = max(APPROACH_LARGEST_STEP * fraction_remaining, 1.0)
 
-        print(f"[MOTION] approach_visual\n\tblock area {target_detection.area:.1f}, distance {distance_cm:.1f},\n\tcentroid error {target_detection.centroid_error:.1f}, steering degree {steer_deg:.1f}")
+        logger.info(f"[MOTION] approach_visual\n\tblock area {target_detection.area:.1f}, distance {distance_cm:.1f},\n\tcentroid error {target_detection.centroid_error:.1f}, steering degree {steer_deg:.1f}")
         pivot_to_heading(localizer, steer_heading)
 
         if target_detection.block_too_close and steer_deg >= VISUAL_APPROACH_TOLERANCE:
@@ -626,5 +754,5 @@ def approach_visual(localizer: Localizer, target: str,
             if failures >= 3:
                 raise ApproachVisualStuck()
 
-    print(f"[MOTION] approach_visual timeout {time.monotonic() - deadline:.1f} s")
+    logger.info(f"[MOTION] approach_visual timeout {time.monotonic() - deadline:.1f} s")
     return False

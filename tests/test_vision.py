@@ -54,22 +54,24 @@ def test_block_too_close_below_threshold():
 
 
 def test_centroid_error_at_center():
-    # centroid_error = cx - SENSOR_RESOLUTION[0]//2; zero at image center
+    # Formula: cx - SENSOR_RESOLUTION[0]//2 + SENSOR_RESOLUTION[0]//50
+    # With SENSOR_RESOLUTION[0]=720: offset = 720//50 = 14.
+    # cx at center -> 0 + 14 = 14.
     cx_center = vision.SENSOR_RESOLUTION[0] // 2
     det = vision.DetectionResult(label="red", cx=cx_center, cy=_CY, area=1000)
-    assert det.centroid_error == 0
+    assert det.centroid_error == 14
 
 
 def test_centroid_error_right_of_center():
     cx_center = vision.SENSOR_RESOLUTION[0] // 2
     det = vision.DetectionResult(label="red", cx=cx_center + 100, cy=_CY, area=1000)
-    assert det.centroid_error == 100
+    assert det.centroid_error == 114
 
 
 def test_centroid_error_left_of_center():
     cx_center = vision.SENSOR_RESOLUTION[0] // 2
     det = vision.DetectionResult(label="red", cx=cx_center - 100, cy=_CY, area=1000)
-    assert det.centroid_error == -100
+    assert det.centroid_error == -86
 
 
 def test_build_mask_red_blob_hits():
@@ -199,3 +201,12 @@ def test_detect_all_colors_returns_detection_for_red_blob():
     assert result["red"].label == "red"
     assert result["blue"] is None
     assert result["green"] is None
+
+
+def test_best_contour_cy_above_max_valid_returns_none():
+    # Blob whose centroid lands below VISION_MAX_VALID_CY (600) in the
+    # rotated frame is floor glare; _best_contour must reject it.
+    cy_low = vision.VISION_MAX_VALID_CY + 50   # 650, comfortably past threshold
+    hsv = _hsv_frame_with_blob(5, 200, 200, _CX, cy_low, _R_BIG)
+    mask = vision._build_mask(hsv, vision.COLOR_MASKS["red"])
+    assert vision._best_contour(mask, "red") is None

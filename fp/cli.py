@@ -1,3 +1,4 @@
+import logging
 import sys
 import datetime
 
@@ -8,20 +9,22 @@ from fp import fsm
 from fp.localization import Localizer
 from fp.mapping import PathTracker
 
+logger = logging.getLogger(__name__)
+
 def _mission_main(argv: list) -> int:
     tracker = None
     try:
         hal.init()
         if not hal.start_imu():
-            print("[CLI] IMU failed to come up; aborting")
+            logger.info("[CLI] IMU failed to come up; aborting")
             return 1
         
         if not hal.start_ultrasonic():
-            print("[CLI] Ultrasonic failed to start; aborting")
+            logger.info("[CLI] Ultrasonic failed to start; aborting")
             return 1
 
         if not vision.init_camera():
-            print("[CLI] Camera failed to come up; aborting")
+            logger.info("[CLI] Camera failed to come up; aborting")
             return 1
 
         loc = Localizer()
@@ -30,19 +33,21 @@ def _mission_main(argv: list) -> int:
         loc.pose.heading = hal.get_heading()
 
         loc.set_position(arena.LAUNCH_ZONE_CENTER[0], arena.LAUNCH_ZONE_CENTER[1])
-        print(f"[CLI] start pose: ({loc.pose.x_cm, loc.pose.y_cm, loc.pose.heading})")
+        logger.info(f"[CLI] start pose: ({loc.pose.x_cm, loc.pose.y_cm, loc.pose.heading})")
+
+        input("Press enter to start!")
 
         final_state, delivered = fsm.run(loc)
-        print(f"[CLI] done: state {final_state.value} delivered {delivered} of {fsm.TOTAL_BLOCKS}")
+        logger.info(f"[CLI] done: state {final_state.value} delivered {delivered} of {fsm.TOTAL_BLOCKS}")
         return 0
     finally:
         try:
             if tracker is not None:
                 plot_path = datetime.datetime.now().strftime("run_path_%Y%m%dT%H%M%S.png")
                 tracker.save_plot(plot_path)
-                print(f"[CLI] path plot saved to {plot_path}")
+                logger.info(f"[CLI] path plot saved to {plot_path}")
         except Exception as e:
-            print(f"[CLI] path plot could not be saved: {e}")
+            logger.info(f"[CLI] path plot could not be saved: {e}")
         try:
             vision.release_camera()
         except Exception:

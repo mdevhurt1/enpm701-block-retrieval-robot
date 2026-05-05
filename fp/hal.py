@@ -1,3 +1,4 @@
+import logging
 import pigpio
 import serial
 import threading
@@ -5,6 +6,8 @@ import time
 import math
 from collections import deque
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 # Motor pin assignments (BCM numbering, L298N H-Bridge)
 _LEFT_FORWARD   = 26  # IN4  (Board 37)
@@ -14,7 +17,7 @@ _RIGHT_FORWARD  = 6   # IN1  (Board 31)
 
 # Motor PWM
 _PWM_FREQUENCY      = 50
-PWM_DUTY_STRAIGHT  = 30
+PWM_DUTY_STRAIGHT  = 40
 PWM_DUTY_TURN      = 50
 
 # Wheel encoders (BCM, pull-up digital inputs)
@@ -82,7 +85,7 @@ class Robot:
             with self._back_right_encoder_lock:
                 self._back_right_encoder_count += 1
         else:
-            print(f"encoder callback called with unknown pin {gpio_pin}")
+            logger.info(f"encoder callback called with unknown pin {gpio_pin}")
 
     def read_back_right_encoder(self) -> int:
         with self._back_right_encoder_lock:
@@ -144,14 +147,14 @@ class Robot:
         elif left_direction == -1:
             self._pi.set_PWM_dutycycle(_LEFT_REVERSE, left_duty)
         else:
-            print(f"[HAL] Unkown direction {left_direction} requested for the left wheels with duty {left_duty}")
+            logger.info(f"[HAL] Unkown direction {left_direction} requested for the left wheels with duty {left_duty}")
 
         if right_direction == +1:
             self._pi.set_PWM_dutycycle(_RIGHT_FORWARD, right_duty)
         elif right_direction == -1:
             self._pi.set_PWM_dutycycle(_RIGHT_REVERSE, right_duty)
         else:
-            print(f"[HAL] Unkown direction {right_direction} requested for the right wheels with duty {right_duty}")
+            logger.info(f"[HAL] Unkown direction {right_direction} requested for the right wheels with duty {right_duty}")
 
     def motors_forward(self, duty: float = PWM_DUTY_STRAIGHT) -> None:
         self.stop_motors()
@@ -191,12 +194,12 @@ class Robot:
             target=self._ping, daemon=True, name="ultrasonic-reader"
         )
         self._ultrasonic_thread.start()
-        print("[HAL] Waiting for first ultrasonic reading...")
+        logger.info("[HAL] Waiting for first ultrasonic reading...")
         if not self._ultrasonic_ready.wait(timeout=timeout_s):
-            print("[HAL] No ultrasonic reading received within timeout")
+            logger.info("[HAL] No ultrasonic reading received within timeout")
             return False
         time.sleep(0.5)
-        print(f"[HAL] Ultrasonic ready - distance: {self.get_ultrasonic_distance():.1f} cm")
+        logger.info(f"[HAL] Ultrasonic ready - distance: {self.get_ultrasonic_distance():.1f} cm")
         return True
 
     def stop_ultrasonic(self) -> None:
@@ -277,12 +280,12 @@ class Robot:
                 else:
                     time.sleep(0.005)
             except serial.SerialException as e:
-                print(f"[HAL] Serial error: {e}")
+                logger.info(f"[HAL] Serial error: {e}")
                 time.sleep(0.5)
             except ValueError:
                         pass
             except Exception as e:
-                print(f"[HAL] Unexpected error: {e}")
+                logger.info(f"[HAL] Unexpected error: {e}")
 
     @staticmethod
     def _find_imu_port(preferred: str = _IMU_PORT) -> str:
@@ -290,12 +293,12 @@ class Robot:
             from serial.tools.list_ports import comports
             for info in comports():
                 if info.vid in _ARDUINO_VIDS:
-                    print(f"[HAL] Auto-discovered port: {info.device} (VID=0x{info.vid:04X} '{info.description}')")
+                    logger.info(f"[HAL] Auto-discovered port: {info.device} (VID=0x{info.vid:04X} '{info.description}')")
                     return info.device
         except Exception as e:
-            print(f"[HAL] Port auto-discovery failed: {e}")
+            logger.info(f"[HAL] Port auto-discovery failed: {e}")
 
-        print(f"[HAL] Using fallback port: {preferred}")
+        logger.info(f"[HAL] Using fallback port: {preferred}")
         return preferred
 
     def start_imu(self, port: Optional[str] = None, baud: int = _IMU_BAUD, timeout_s: int = 10) -> bool:
@@ -304,7 +307,7 @@ class Robot:
         try:
             self._serial = serial.Serial(port, baud, timeout=1)
         except Exception as e:
-            print(f"[HAL] Could not open {port}: {e}")
+            logger.info(f"[HAL] Could not open {port}: {e}")
             return False
 
         self._imu_stop.clear()
@@ -313,13 +316,13 @@ class Robot:
         )
         self._imu_thread.start()
 
-        print("[HAL] Waiting for first IMU reading...")
+        logger.info("[HAL] Waiting for first IMU reading...")
         if not self._imu_ready.wait(timeout=timeout_s):
-            print("[HAL] No heading received within timeout")
+            logger.info("[HAL] No heading received within timeout")
             return False
 
         time.sleep(0.5)
-        print(f"[HAL] Ready - heading: {self.get_heading():.1f} deg")
+        logger.info(f"[HAL] Ready - heading: {self.get_heading():.1f} deg")
         return True
 
     def stop_imu(self) -> None:

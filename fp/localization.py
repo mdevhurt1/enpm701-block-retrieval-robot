@@ -6,7 +6,7 @@ from fp import arena
 # Robot geometry
 ROBOT_HALF_EXTENT_CM    = 20.0
 ROBOT_SENSOR_OFFSET_CM  = 15.0   # front sensor is 15 cm forward of robot center.
-WALL_CLEARANCE_CM       = 20.0
+WALL_CLEARANCE_CM       = 15.0
 
 @dataclass
 class Pose:
@@ -55,11 +55,11 @@ class Localizer:
         robot_distance_to_wall_cm = distance - ROBOT_HALF_EXTENT_CM
         return robot_distance_to_wall_cm < WALL_CLEARANCE_CM
     
-    def is_valid_point(self, x: float, y: float) -> bool:
-        x_lo = arena.ARENA_WEST_WALL_X_CM + WALL_CLEARANCE_CM + ROBOT_HALF_EXTENT_CM
-        x_hi = arena.ARENA_EAST_WALL_X_CM - WALL_CLEARANCE_CM - ROBOT_HALF_EXTENT_CM
-        y_lo = arena.ARENA_SOUTH_WALL_Y_CM + WALL_CLEARANCE_CM + ROBOT_HALF_EXTENT_CM
-        y_hi = arena.ARENA_NORTH_WALL_Y_CM - WALL_CLEARANCE_CM - ROBOT_HALF_EXTENT_CM
-        
+    def is_valid_point(self, x: float, y: float, extra_margin: float = 0.0) -> bool:
+        x_lo = arena.ARENA_WEST_WALL_X_CM + WALL_CLEARANCE_CM + ROBOT_HALF_EXTENT_CM + extra_margin
+        x_hi = arena.ARENA_EAST_WALL_X_CM - WALL_CLEARANCE_CM - ROBOT_HALF_EXTENT_CM - extra_margin
+        y_lo = arena.ARENA_SOUTH_WALL_Y_CM + WALL_CLEARANCE_CM + ROBOT_HALF_EXTENT_CM + extra_margin
+        y_hi = arena.ARENA_NORTH_WALL_Y_CM - WALL_CLEARANCE_CM - ROBOT_HALF_EXTENT_CM - extra_margin
+
         return  x > x_lo and x < x_hi and y > y_lo and y < y_hi
-        
+

@@ -35,6 +35,18 @@ def test_not_facing_collection_zone_far_away():
     assert not search._facing_collection_zone(loc)
 
 
+def test_scan_360_returns_none_when_robot_in_collection_zone():
+    # scan_360 bails immediately when the robot is inside the collection zone
+    # (there are no blocks to collect there, and the scan would be useless).
+    planner = search.SearchPlanner()
+    cx, cy = arena.COLLECTION_ZONE_CENTER
+    loc = _loc(x=cx, y=cy)
+    with patch("fp.search.vision.detect_all_colors") as mock_detect:
+        result = planner.scan_360(loc, "red")
+    assert result is None
+    mock_detect.assert_not_called()
+
+
 def test_scan_360_marks_visited():
     planner = search.SearchPlanner()
     loc = _loc(x=100.0, y=100.0)
@@ -193,6 +205,71 @@ def test_record_sighting_allows_distant_positions():
     assert len(planner._sightings["blue"]) == 2
 
 
+def test_has_sighting_in_cell_empty_returns_false():
+    planner = search.SearchPlanner()
+    assert planner.has_sighting_in_cell(50.0, 50.0, "blue") is False
+
+
+def test_has_sighting_in_cell_matches_same_cell_same_color():
+    planner = search.SearchPlanner()
+    planner._record_sighting("blue", 50.0, 50.0, 0.0)
+    # Query inside the same grid cell as the sighting (within GRID_RESOLUTION_CM).
+    assert planner.has_sighting_in_cell(55.0, 55.0, "blue") is True
+
+
+def test_has_sighting_in_cell_rejects_different_cell():
+    planner = search.SearchPlanner()
+    planner._record_sighting("blue", 50.0, 50.0, 0.0)
+    far = 50.0 + 2 * search.GRID_RESOLUTION_CM
+    assert planner.has_sighting_in_cell(far, 50.0, "blue") is False
+
+
+def test_has_sighting_in_cell_rejects_other_color():
+    # A green sighting in the cell should NOT register as a blue sighting -
+    # the override should fire only when the sighting matches the active
+    # target, otherwise an unrelated stale sighting would force a scan.
+    planner = search.SearchPlanner()
+    planner._record_sighting("green", 90.0, 90.0, 0.0)
+    assert planner.has_sighting_in_cell(95.0, 95.0, "blue") is False
+    assert planner.has_sighting_in_cell(95.0, 95.0, "green") is True
+
+
+# ----- clear_sightings_in_cell ------------------------------------------------
+
+def test_clear_sightings_in_cell_empty_cache_returns_zero():
+    planner = search.SearchPlanner()
+    assert planner.clear_sightings_in_cell(50.0, 50.0, "red") == 0
+
+
+def test_clear_sightings_in_cell_removes_matching_color_in_cell():
+    planner = search.SearchPlanner()
+    planner._record_sighting("red", 50.0, 50.0, 0.0)
+    removed = planner.clear_sightings_in_cell(55.0, 55.0, "red")
+    assert removed == 1
+    assert planner.has_sighting_in_cell(55.0, 55.0, "red") is False
+
+
+def test_clear_sightings_in_cell_leaves_other_colors_alone():
+    planner = search.SearchPlanner()
+    planner._record_sighting("red", 50.0, 50.0, 0.0)
+    planner._record_sighting("blue", 50.0, 50.0, 0.0)
+    removed = planner.clear_sightings_in_cell(55.0, 55.0, "red")
+    assert removed == 1
+    assert planner.has_sighting_in_cell(55.0, 55.0, "red") is False
+    assert planner.has_sighting_in_cell(55.0, 55.0, "blue") is True
+
+
+def test_clear_sightings_in_cell_leaves_other_cells_alone():
+    planner = search.SearchPlanner()
+    planner._record_sighting("red", 50.0, 50.0, 0.0)
+    far = 50.0 + 2 * search.GRID_RESOLUTION_CM
+    planner._record_sighting("red", far, 50.0, 0.0)
+    removed = planner.clear_sightings_in_cell(55.0, 55.0, "red")
+    assert removed == 1
+    assert planner.has_sighting_in_cell(55.0, 55.0, "red") is False
+    assert planner.has_sighting_in_cell(far, 50.0, "red") is True
+
+
 def test_scan_360_caches_nontarget_sightings():
     planner = search.SearchPlanner()
     loc = _loc(x=100.0, y=100.0)
@@ -208,3 +285,74 @@ def test_scan_360_caches_nontarget_sightings():
 
     assert result is None
     assert planner.get_sighting("blue") is not None
+
+
+def test_scan_360_clears_stale_target_sightings_in_current_cell():
+    # Stale sighting for the current target at the robot's cell should be
+    # invalidated at the start of scan_360 - if the block was pushed away
+    # since the original observation, the upcoming scan tells the truth
+    # and we don't want to keep navigating back to an empty cell.
+    planner = search.SearchPlanner()
+    loc = _loc(x=100.0, y=100.0)
+    planner._record_sighting("red", 100.0, 100.0, 0.0)
+    assert planner.has_sighting_in_cell(100.0, 100.0, "red") is True
+
+    no_detect = {"red": None, "blue": None, "green": None}
+    with patch("fp.search.hal.get_heading", return_value=0.0), \
+         patch("fp.search.motion.pivot_to_heading"), \
+         patch("fp.search.motion._pivot_to_heading"), \
+         patch("fp.search.vision.detect_all_colors", return_value=no_detect), \
+         patch("fp.search._facing_collection_zone", return_value=False):
+        planner.scan_360(loc, "red", n_steps=1, skip_collection_zone=False)
+
+    assert planner.has_sighting_in_cell(100.0, 100.0, "red") is False
+
+
+def test_scan_360_does_not_clear_other_color_sightings_in_current_cell():
+    # The clear is target-specific: a blue sighting at our current cell
+    # while we scan for red should remain - it's still useful intel for
+    # the next time blue becomes the target.
+    planner = search.SearchPlanner()
+    loc = _loc(x=100.0, y=100.0)
+    planner._record_sighting("blue", 100.0, 100.0, 0.0)
+
+    no_detect = {"red": None, "blue": None, "green": None}
+    with patch("fp.search.hal.get_heading", return_value=0.0), \
+         patch("fp.search.motion.pivot_to_heading"), \
+         patch("fp.search.motion._pivot_to_heading"), \
+         patch("fp.search.vision.detect_all_colors", return_value=no_detect), \
+         patch("fp.search._facing_collection_zone", return_value=False):
+        planner.scan_360(loc, "red", n_steps=1, skip_collection_zone=False)
+
+    assert planner.has_sighting_in_cell(100.0, 100.0, "blue") is True
+
+
+# -- _angle_in_arc() ---------------------------------------------------------
+
+@pytest.mark.parametrize("angle,arc_start,arc_end,expected", [
+    (90.0,  45.0,  135.0, True),   # inside arc
+    (180.0, 45.0,  135.0, False),  # outside arc
+    (45.0,  45.0,  135.0, True),   # at arc start (inclusive)
+    (135.0, 45.0,  135.0, True),   # at arc end (inclusive)
+    (350.0, 340.0, 20.0,  True),   # inside wraparound arc
+    (180.0, 340.0, 20.0,  False),  # outside wraparound arc
+])
+def test_angle_in_arc(angle, arc_start, arc_end, expected):
+    assert search._angle_in_arc(angle, arc_start, arc_end) is expected
+
+
+# -- _arcs_overlap() ---------------------------------------------------------
+
+def test_arcs_overlap_overlapping_returns_true():
+    # [0 deg, 90 deg] and [45 deg, 135 deg] share [45 deg, 90 deg]
+    assert search._arcs_overlap(0.0, 90.0, 45.0, 135.0) is True
+
+
+def test_arcs_overlap_disjoint_returns_false():
+    # [0 deg, 45 deg] and [90 deg, 135 deg] share nothing
+    assert search._arcs_overlap(0.0, 45.0, 90.0, 135.0) is False
+
+
+def test_arcs_overlap_wraparound_returns_true():
+    # [300 deg, 60 deg] wraps through 0 and overlaps [0 deg, 30 deg]
+    assert search._arcs_overlap(300.0, 60.0, 0.0, 30.0) is True

@@ -15,6 +15,7 @@ if _fp_parent not in sys.path:
     sys.path.insert(0, _fp_parent)
 
 import fp.hal as hal
+from fp.localization import Localizer
 
 _POLL_INTERVAL_S = 0.1
 
@@ -28,12 +29,19 @@ def main():
         hal.cleanup()
         return
 
+    loc = Localizer()
     print("Printing ultrasonic readings. Press Ctrl+C to stop.\n")
     try:
         while True:
             dist = hal.get_ultrasonic_distance()
             healthy = hal.is_ultrasonic_healthy()
-            print(f"  distance: {dist:6.1f} cm  healthy: {healthy}", end="\r")
+            to_center = loc.ultrasonic_to_robot_center(dist, 0.0)
+            inside = loc.ultrasonic_reading_inside_robot_radius(dist, 0.0)
+            print(
+                f"  distance: {dist:6.1f} cm  to_center: {to_center:6.1f} cm"
+                f"  inside_radius: {inside!s:<5}  healthy: {healthy}",
+                end="\r",
+            )
             time.sleep(_POLL_INTERVAL_S)
     except KeyboardInterrupt:
         print("\nInterrupted.")

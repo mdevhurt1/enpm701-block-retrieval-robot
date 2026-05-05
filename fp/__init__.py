@@ -1,0 +1,16 @@
+import logging
+import sys
+
+# Configure once at package import. Mission code is import-heavy at startup
+# (vision.py loads camera calibration at module level), so basicConfig has to
+# happen here rather than in cli.main() to catch the early diagnostics.
+# stream=sys.stdout matches the prior `print()` destination so existing log
+# capture / redirection setups keep working unchanged. INFO level surfaces
+# everything that used to print; the timestamp format is what the prints
+# were missing.
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(asctime)s.%(msecs)03d] %(message)s",
+    datefmt="%H:%M:%S",
+    stream=sys.stdout,
+)

@@ -1,3 +1,4 @@
+import logging
 import math
 
 from fp import arena
@@ -7,8 +8,10 @@ from fp import vision
 from fp import localization
 from fp.localization import Localizer
 
+logger = logging.getLogger(__name__)
+
 # Grid search tuning constants
-GRID_RESOLUTION_CM = 50.0
+GRID_RESOLUTION_CM = 35.0
 
 # Collection zone avoidance tuning constants
 _HALF_FOV_DEG = vision.CAMERA_HFOV_DEG / 2.0
@@ -44,7 +47,7 @@ def _facing_collection_zone(loc: Localizer) -> bool:
         return False
 
     if _ZX_MIN <= rx <= _ZX_MAX and _ZY_MIN <= ry <= _ZY_MAX:
-        print("[SEARCH] Facing collection zone")
+        logger.info("[SEARCH] Facing collection zone")
         return True
 
     bearings = sorted(
@@ -58,11 +61,12 @@ def _facing_collection_zone(loc: Localizer) -> bool:
     zone_arc_end = (bearings[largest_gap_idx] + _ZONE_PAD_DEG) % 360
 
     heading = hal.get_heading() % 360
+    loc.set_heading(heading)
     fov_start = (heading - _HALF_FOV_DEG) % 360
     fov_end = (heading + _HALF_FOV_DEG) % 360
 
     if _arcs_overlap(fov_start, fov_end, zone_arc_start, zone_arc_end):
-        print(f"[SEARCH] Facing collection zone")
+        logger.info(f"[SEARCH] Facing collection zone")
         return True
 
     return False
@@ -128,7 +132,7 @@ class SearchPlanner:
                 best_cell = cell
 
         x, y = _cell_center(*best_cell)
-        print(f"[SEARCH] next_pose: cell ({best_cell[0]}, {best_cell[1]}) center ({x:.1f}, {y:.1f}) distance {best_dist:.1f} [min_count={min_count}]")
+        logger.info(f"[SEARCH] next_pose: cell ({best_cell[0]}, {best_cell[1]}) center ({x:.1f}, {y:.1f}) distance {best_dist:.1f} [min_count={min_count}]")
         return (x, y)
 
     def scan_360(self, localizer: Localizer, target: str,
@@ -136,6 +140,12 @@ class SearchPlanner:
                  skip_collection_zone: bool = True
                  ) -> vision.DetectionResult:
         self.mark_visited(localizer.pose.x_cm, localizer.pose.y_cm)
+        # Drop any stale target-colour sighting at the current cell before
+        # scanning. The scan is about to give us ground truth for this cell,
+        # so a prior sighting (which may point at a block that has since
+        # been pushed elsewhere) shouldn't survive to lure us back here on
+        # a future search cycle.
+        self.clear_sightings_in_cell(localizer.pose.x_cm, localizer.pose.y_cm, target)
 
         if arena.in_collection_zone(localizer.pose.x_cm, localizer.pose.y_cm):
             return None
@@ -147,7 +157,7 @@ class SearchPlanner:
         for i in range(n_steps):
             parts = []
             if skip_collection_zone and _facing_collection_zone(localizer):
-                print(f"[SEARCH] scan_360: step {i + 1}/{n_steps} skipped: camera facing collection zone")
+                logger.info(f"[SEARCH] scan_360: step {i + 1}/{n_steps} skipped: camera facing collection zone")
                 motion.pivot_to_heading(localizer, (localizer.pose.heading + step_deg) % 360.0)
                 continue
 
@@ -157,11 +167,11 @@ class SearchPlanner:
                     parts.append(f"{color}: none")
                 else:
                     parts.append(f"{color}: area={det.area:.0f} cx={det.cx} cy={det.cy}")
-            print("  " + "  |  ".join(parts), end="\n")
+            logger.info("  " + "  |  ".join(parts))
             
             target_detection = detections.get(target)
             if target_detection is not None:
-                print(f"[SEARCH] scan_360: spotted {target} at scan step {i + 1}/{n_steps} area {target_detection.area:.1f}")
+                logger.info(f"[SEARCH] scan_360: spotted {target} at scan step {i + 1}/{n_steps} area {target_detection.area:.1f}")
                 return target_detection
 
             # Cache non-target sightings for future search cycles.
@@ -181,6 +191,42 @@ class SearchPlanner:
             return 100.0
         min_count = min(self._visits.get(c, 0) for c in self._valid_cells)
         return (min_count / visits) * 100.0
+
+    def has_sighting_in_cell(self, x: float, y: float, color: str) -> bool:
+        """True if `color`'s sighting list has an entry inside the cell containing (x, y).
+
+        A cached sighting is intelligence that a block of this colour was
+        visible from this cell during a prior scan. The FSM uses this to
+        override the skip-low-quality path in _on_search: even when the
+        cell would otherwise be skipped as already-searched, a sighting
+        of the *current target* forces a re-scan because the block we
+        previously saw may still be there. Sightings of other colours
+        do not override the skip - they're irrelevant to the current
+        search and the cell stays "spent" from the planner's view.
+        """
+        cell = self._cell(x, y)
+        for sx, sy, _ in self._sightings.get(color, ()):
+            if self._cell(sx, sy) == cell:
+                return True
+        return False
+
+    def clear_sightings_in_cell(self, x: float, y: float, color: str) -> int:
+        """Drop sightings of `color` whose recorded position falls in the cell containing (x, y).
+
+        Returns the number of entries removed. Called by scan_360 at the
+        start of a scan to invalidate any stale sighting of the current
+        target at the robot's cell: if the block has been displaced since
+        the sighting was recorded, the scan will tell us the truth, and
+        keeping the stale entry around would let get_sighting navigate us
+        back here on a future cycle even though the block is gone.
+        """
+        cell = self._cell(x, y)
+        sightings = self._sightings.get(color)
+        if not sightings:
+            return 0
+        before = len(sightings)
+        self._sightings[color] = [s for s in sightings if self._cell(s[0], s[1]) != cell]
+        return before - len(self._sightings[color])
 
     def _record_sighting(self, color: str, rx: float, ry: float, heading: float) -> None:
         sightings = self._sightings.setdefault(color, [])

@@ -1,5 +1,8 @@
 import colorsys
+import logging
 import random
+
+logger = logging.getLogger(__name__)
 
 
 class PathTracker:
@@ -72,4 +75,4 @@ class PathTracker:
 
         fig.savefig(filepath, dpi=150, bbox_inches="tight")
         plt.close(fig)
-        print(f"[MAPPING] path plot saved to {filepath} ({len(self._segments)} segments)")
+        logger.info(f"[MAPPING] path plot saved to {filepath} ({len(self._segments)} segments)")

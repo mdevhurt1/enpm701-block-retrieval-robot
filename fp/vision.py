@@ -1,6 +1,8 @@
 # Camera capture and HSV blob detection.
 # COLOR_MASKS thresholds were tuned under arena lighting - do not retune in simulation.
+import logging
 import os
+import threading
 import time
 from dataclasses import dataclass
 from typing import Dict
@@ -9,6 +11,8 @@ import numpy as np
 
 from picamera2 import Picamera2
 from libcamera import controls
+
+logger = logging.getLogger(__name__)
 
 # Frame and FOV
 SENSOR_RESOLUTION   = (1280, 720)
@@ -29,9 +33,16 @@ COLOR_MASKS = {
 }
 
 # Detection thresholds
-MIN_BLOB_AREA       = {"red": 10_000, "blue": 10_000, "green": 10_000}
-IN_REACH_TOLERANCE  = {"red": 150_000, "blue": 150_000, "green": 150_000}
-TOO_CLOSE_TOLERANCE = {"red": 20_000, "blue": 20_000, "green": 20_000}
+MIN_BLOB_AREA       = {"red": 10_000,   "green": 10_000,     "blue": 10_000,    }
+IN_REACH_TOLERANCE  = {"red": 150_000,  "green": 120_000,    "blue": 120_000,    }
+TOO_CLOSE_TOLERANCE = {"red": 70_000,   "green": 70_000,     "blue": 70_000,    }
+# Reject blob centroids whose y-coordinate is below this row in the rotated
+# frame (image is 720 px tall after the 90 deg rotation, so this is just
+# above the lower 45 percent). Real block detections in the field show
+# cy in the 120-280 range; floor-glare phantoms (specular highlights on
+# the polished arena hitting the blue HSV mask) show cy in the 590-680
+# range. The threshold is between those clusters with margin to spare.
+VISION_MAX_VALID_CY = 600
 
 _TIMELAPSE_DIR = "time_lapse"
 _last_timelapse_t: float = 0.0
@@ -50,11 +61,11 @@ try:
     _camera_matrix = _cal["camera_matrix"]
     _dist_coeffs = _cal["dist_coeffs"]
     _calibrated = True
-    print(f"[CAM] Loaded camera calibration from {_CAL_PATH}")
+    logger.info(f"[CAM] Loaded camera calibration from {_CAL_PATH}")
 except FileNotFoundError:
-    print(f"[CAM] Calibration file not found: {_CAL_PATH}")
+    logger.info(f"[CAM] Calibration file not found: {_CAL_PATH}")
 except (KeyError, Exception) as _cal_err:
-    print(f"[CAM] Failed to load camera calibration: {_cal_err!r}")
+    logger.info(f"[CAM] Failed to load camera calibration: {_cal_err!r}")
 
 def is_calibrated() -> bool:
     return _calibrated
@@ -79,7 +90,7 @@ class DetectionResult:
 
     @property
     def centroid_error(self) -> int:
-        return self.cx - SENSOR_RESOLUTION[0] // 2
+        return self.cx - SENSOR_RESOLUTION[0] // 2 + SENSOR_RESOLUTION[0] // 50
 
 _picam2 = None
 def init_camera() -> Picamera2:
@@ -93,29 +104,87 @@ def init_camera() -> Picamera2:
     _picam2.set_controls({"AwbMode": controls.AwbModeEnum.Auto})
 
     time.sleep(3)  # AE/AWB settle
+    _start_cache_warmer()
     return _picam2
 
 
 def release_camera() -> None:
     global _picam2
+    _stop_cache_warmer()
     if _picam2 is not None:
         _picam2.stop()
 
+_FRAME_REUSE_TIME = 0.03
+_last_frame = None
+_last_frame_time = 0.0
+# Held during the picamera2 capture call so the cache warmer thread and the
+# foreground (FSM/motion) calls don't race on capture_array() or the cache
+# globals. Holding through the capture also coalesces simultaneous callers
+# onto a single frame.
+_capture_lock = threading.Lock()
 def capture_frame() -> np.ndarray:
     global _last_timelapse_t
+    global _last_frame
+    global _last_frame_time
 
-    # camera is mounted rotated 90 degrees
-    bgr = _picam2.capture_array()
-    bgr = cv2.rotate(bgr, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    with _capture_lock:
+        now = time.monotonic()
+        if (now - _last_frame_time) < _FRAME_REUSE_TIME:
+            return _last_frame
 
-    now = time.monotonic()
-    if now - _last_timelapse_t > 1.0:
-        _last_timelapse_t = now
-        os.makedirs(_TIMELAPSE_DIR, exist_ok=True)
-        fname = os.path.join(_TIMELAPSE_DIR, f"{now:.3f}.jpg")
-        cv2.imwrite(fname, bgr)
+        _last_frame_time = now
 
-    return bgr
+        # camera is mounted rotated 90 degrees
+        _last_frame = _picam2.capture_array()
+        _last_frame = cv2.rotate(_last_frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+
+        if now - _last_timelapse_t > 1.0:
+            _last_timelapse_t = now
+            os.makedirs(_TIMELAPSE_DIR, exist_ok=True)
+            fname = os.path.join(_TIMELAPSE_DIR, f"{now:.3f}.jpg")
+            cv2.imwrite(fname, _last_frame)
+
+        return _last_frame
+
+
+# Background cache warmer. Once-per-second tick keeps the picamera2 buffer
+# drained and the timelapse rolling without any FSM-driven action; foreground
+# callers within FRAME_REUSE_TIME of a tick get the cached frame for free.
+_WARMER_INTERVAL_S = 1.0
+_warmer_thread: threading.Thread = None
+_warmer_stop = threading.Event()
+
+
+def _cache_warmer_loop() -> None:
+    while not _warmer_stop.wait(_WARMER_INTERVAL_S):
+        try:
+            capture_frame()
+        except Exception as e:
+            logger.warning(f"[VISION] cache warmer iteration failed: {e!r}")
+
+
+def _start_cache_warmer() -> None:
+    global _warmer_thread
+    if _warmer_thread is not None and _warmer_thread.is_alive():
+        return
+    _warmer_stop.clear()
+    _warmer_thread = threading.Thread(
+        target=_cache_warmer_loop,
+        daemon=True,
+        name="vision-cache-warmer",
+    )
+    _warmer_thread.start()
+    logger.info(f"[VISION] cache warmer started ({_WARMER_INTERVAL_S:.1f}s interval)")
+
+
+def _stop_cache_warmer() -> None:
+    global _warmer_thread
+    if _warmer_thread is None:
+        return
+    _warmer_stop.set()
+    _warmer_thread.join(timeout=2.0)
+    _warmer_thread = None
+    logger.info("[VISION] cache warmer stopped")
 
 
 # Detection
@@ -152,6 +221,12 @@ def _best_contour(mask: np.ndarray, label: str) -> tuple[np.ndarray, float, int,
 
         cx = int(M["m10"] / M["m00"])
         cy = int(M["m01"] / M["m00"])
+        # Drop candidates whose centroid lies in the lower portion of the
+        # rotated frame - those are floor reflections / specular glare on
+        # the wood, not real blocks. See VISION_MAX_VALID_CY for the
+        # numerical justification.
+        if cy > VISION_MAX_VALID_CY:
+            continue
         candidates.append((c, area, cx, cy))
 
     if not candidates:
@@ -163,7 +238,7 @@ def _best_contour(mask: np.ndarray, label: str) -> tuple[np.ndarray, float, int,
 def detect_all_colors() -> Dict[str, DetectionResult]:
     frame = capture_frame()
     if frame is None:
-        print("[VISION] detect_all_colors received None frame for detection")
+        logger.info("[VISION] detect_all_colors received None frame for detection")
         return {c: None for c in COLOR_MASKS}
     
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
@@ -182,7 +257,7 @@ def detect_all_colors() -> Dict[str, DetectionResult]:
 
 def detect_block(target: str) -> DetectionResult:
     if target not in COLOR_MASKS:
-        print(f"[VISION] Invalid target color '{target}' for detection")
+        logger.info(f"[VISION] Invalid target color '{target}' for detection")
         return None
 
     dets = detect_all_colors()
