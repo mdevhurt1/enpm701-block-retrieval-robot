@@ -17,3 +17,6 @@ numpy>=2.4.2
 # tests/__init__.py - tests still pass.  Install the full package only if
 # you need to run non-test vision code on a Pi or workstation with OpenCV.
 opencv-python-headless>=4.10.0
+
+# Path plotting (used by fp/mapping.py)
+matplotlib>=3.9.0

@@ -9,7 +9,7 @@ Usage (on the Raspberry Pi, with checkerboard visible to camera):
 
 Controls:
     SPACE  - capture current frame as a calibration image
-    c      - compute calibration from captured images (need ≥ 15)
+    c      - compute calibration from captured images (need >= 15)
     s      - save calibration to camera_matrix.npz and quit
     q      - quit without saving
 

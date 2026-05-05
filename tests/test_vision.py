@@ -1,156 +1,201 @@
-import sys
-import os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-import tests  # hw_stub
-
-import math
 import numpy as np
-import pytest
 import cv2
+import pytest
+from unittest.mock import patch
+from fp import vision
+
+# Override SENSOR_RESOLUTION so centroid_error is testable with known values.
+# The blob-test frames are created at this size.
+_SENSOR_H = 720
+_SENSOR_W = 960
+vision.SENSOR_RESOLUTION = (_SENSOR_H, _SENSOR_W)
+
+# Fixed frame size for mask / contour / detect tests.
+_TEST_H = _SENSOR_H
+_TEST_W = _SENSOR_W
+
+_CX, _CY = 480, 360
+_R_BIG = 60
+_R_SMALL = 10
 
 
-class TestDetectAllColors:
-
-    def _solid_bgr_frame(self, bgr_color, h=480, w=640):
-        frame = np.zeros((h, w, 3), dtype=np.uint8)
-        frame[:] = bgr_color
-        return frame
-
-    def _red_frame(self):
-        # Pure red in BGR
-        return self._solid_bgr_frame((0, 0, 200))
-
-    def _green_frame(self):
-        return self._solid_bgr_frame((0, 200, 0))
-
-    def _blue_frame(self):
-        return self._solid_bgr_frame((200, 0, 0))
-
-    def test_red_detected_in_red_frame(self):
-        from fp import vision
-        frame = self._red_frame()
-        dets = vision.detect_all_colors(frame)
-        # At minimum the red key exists; may or may not match HSV thresholds
-        assert 'red' in dets
-
-    def test_all_colors_keyed(self):
-        from fp import vision
-        frame = np.zeros((480, 640, 3), dtype=np.uint8)
-        dets = vision.detect_all_colors(frame)
-        for color in vision.COLOR_MASKS:
-            assert color in dets, f"color '{color}' missing from detect_all_colors result"
-
-    def test_none_result_for_empty_frame(self):
-        from fp import vision
-        frame = np.zeros((480, 640, 3), dtype=np.uint8)
-        dets = vision.detect_all_colors(frame)
-        for color, det in dets.items():
-            assert det is None, f"{color} detected in blank frame (unexpected)"
-
-    def test_none_input(self):
-        from fp import vision
-        dets = vision.detect_all_colors(None)
-        assert isinstance(dets, dict)
-        for color, det in dets.items():
-            assert det is None
+def _hsv_frame_with_blob(h, s, v, cx, cy, radius):
+    frame = np.zeros((_TEST_H, _TEST_W, 3), dtype=np.uint8)
+    cv2.circle(frame, (cx, cy), radius, (h, s, v), -1)
+    return frame
 
 
-class TestEstimateBlockPose:
-
-    def _make_block_frame(self, cx=320, cy=240, size_px=80, bgr_color=(0, 0, 200),
-                          w=640, h=480):
-        frame = np.zeros((h, w, 3), dtype=np.uint8)
-        half = size_px // 2
-        x1, y1 = max(0, cx - half), max(0, cy - half)
-        x2, y2 = min(w, cx + half), min(h, cy + half)
-        frame[y1:y2, x1:x2] = bgr_color
-        return frame
-
-    def test_centred_block_no_lateral_error(self):
-        from fp import vision
-        # Patch camera matrix so fy and fx are known
-        import numpy as np
-        vision._camera_matrix = np.array([
-            [500.0,   0.0, 320.0],
-            [  0.0, 500.0, 240.0],
-            [  0.0,   0.0,   1.0],
-        ])
-        vision._calibrated = True
-
-        # Build a red block frame centred at principal point
-        # Block is MIN_BLOB_AREA-sized or larger
-        frame = self._make_block_frame(cx=320, cy=240, size_px=200,
-                                       bgr_color=(0, 0, 200))
-
-        from fp.vision import DetectionResult
-        det = DetectionResult(label='red', cx=320, cy=240, area=200*200)
-        result = vision.estimate_block_pose(frame, det, robot_pose=(50.0, 50.0, 0.0))
-
-        if result is None:
-            pytest.skip("Block not detectable in synthetic frame (HSV mismatch)")
-        arena_x, arena_y = result
-        # With bearing=0 and robot heading north, lateral offset should be ~0
-        assert abs(arena_x - 50.0) < 20.0, f"arena_x={arena_x:.1f}, expected ≈50"
-        # Block should be ahead (north) of robot
-        assert arena_y > 50.0, f"arena_y={arena_y:.1f} should be north of robot"
-
-    def test_returns_none_when_uncalibrated(self):
-        from fp import vision
-        orig_calibrated = vision._calibrated
-        vision._calibrated = False
-        try:
-            frame = np.zeros((480, 640, 3), dtype=np.uint8)
-            from fp.vision import DetectionResult
-            det = DetectionResult(label='red', cx=320, cy=240, area=50000)
-            result = vision.estimate_block_pose(frame, det, (0.0, 0.0, 0.0))
-            assert result is None
-        finally:
-            vision._calibrated = orig_calibrated
+def _bgr_frame_with_blob(h, s, v, cx, cy, radius):
+    hsv = _hsv_frame_with_blob(h, s, v, cx, cy, radius)
+    return cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
 
 
-class TestWithinReach:
-
-    def test_within_reach_when_centred_and_large(self):
-        from fp import vision
-        from fp.vision import PICKUP_AREA_THRESHOLD, FRAME_WIDTH
-        # Centred (error=0) and large area
-        det = vision.DetectionResult(label='red', cx=FRAME_WIDTH // 2, cy=540, area=PICKUP_AREA_THRESHOLD * 2)
-        assert det.within_reach is True
-
-    def test_not_within_reach_when_too_small(self):
-        from fp import vision
-        from fp.vision import PICKUP_AREA_THRESHOLD, FRAME_WIDTH
-        det = vision.DetectionResult(label='red', cx=FRAME_WIDTH // 2, cy=540, area=PICKUP_AREA_THRESHOLD // 2)
-        assert det.within_reach is False
-
-    def test_not_within_reach_when_off_centre(self):
-        from fp import vision
-        from fp.vision import PICKUP_AREA_THRESHOLD
-        # Large enough area but high centroid error (cx=0 far from centre)
-        det = vision.DetectionResult(label='red', cx=0, cy=540, area=PICKUP_AREA_THRESHOLD * 2)
-        assert det.within_reach is False
+def test_within_reach_at_threshold():
+    det = vision.DetectionResult(label="red", cx=_CX, cy=_CY, area=vision.IN_REACH_TOLERANCE["red"])
+    assert det.within_reach is True
 
 
-class TestIsCalibrated:
-
-    def test_returns_bool(self):
-        from fp import vision
-        result = vision.is_calibrated()
-        assert isinstance(result, bool)
+def test_within_reach_below_threshold():
+    det = vision.DetectionResult(label="red", cx=_CX, cy=_CY,
+                                 area=vision.IN_REACH_TOLERANCE["red"] - 1)
+    assert det.within_reach is False
 
 
-class TestTuning:
+def test_block_too_close_at_threshold():
+    det = vision.DetectionResult(label="red", cx=_CX, cy=_CY,
+                                 area=vision.TOO_CLOSE_TOLERANCE["red"])
+    assert det.block_too_close is True
 
-    def test_import_tuning(self):
-        from fp import tuning
-        assert hasattr(tuning, 'RUN_LIMIT_S')
-        assert tuning.RUN_LIMIT_S > 0
 
-    def test_pickup_area_threshold_positive(self):
-        from fp.vision import PICKUP_AREA_THRESHOLD
-        assert PICKUP_AREA_THRESHOLD > 0
+def test_block_too_close_below_threshold():
+    det = vision.DetectionResult(label="red", cx=_CX, cy=_CY,
+                                 area=vision.TOO_CLOSE_TOLERANCE["red"] - 1)
+    assert det.block_too_close is False
 
-    def test_kp_visual_positive(self):
-        from fp import navigation
-        assert navigation.KP_VISUAL >= 0
+
+def test_centroid_error_at_center():
+    # centroid_error = cx - SENSOR_RESOLUTION[0]//2; zero at image center
+    cx_center = vision.SENSOR_RESOLUTION[0] // 2
+    det = vision.DetectionResult(label="red", cx=cx_center, cy=_CY, area=1000)
+    assert det.centroid_error == 0
+
+
+def test_centroid_error_right_of_center():
+    cx_center = vision.SENSOR_RESOLUTION[0] // 2
+    det = vision.DetectionResult(label="red", cx=cx_center + 100, cy=_CY, area=1000)
+    assert det.centroid_error == 100
+
+
+def test_centroid_error_left_of_center():
+    cx_center = vision.SENSOR_RESOLUTION[0] // 2
+    det = vision.DetectionResult(label="red", cx=cx_center - 100, cy=_CY, area=1000)
+    assert det.centroid_error == -100
+
+
+def test_build_mask_red_blob_hits():
+    hsv = _hsv_frame_with_blob(5, 200, 200, _CX, _CY, _R_BIG)
+    mask = vision._build_mask(hsv, vision.COLOR_MASKS["red"])
+    assert mask[_CY, _CX] > 0
+
+
+def test_build_mask_black_frame_empty():
+    hsv = np.zeros((_TEST_H, _TEST_W, 3), dtype=np.uint8)
+    mask = vision._build_mask(hsv, vision.COLOR_MASKS["red"])
+    assert mask.sum() == 0
+
+
+def test_build_mask_blue_blob_hits():
+    hsv = _hsv_frame_with_blob(100, 200, 200, _CX, _CY, _R_BIG)
+    mask = vision._build_mask(hsv, vision.COLOR_MASKS["blue"])
+    assert mask[_CY, _CX] > 0
+
+
+def test_best_contour_single_blob():
+    hsv = _hsv_frame_with_blob(5, 200, 200, _CX, _CY, _R_BIG)
+    mask = vision._build_mask(hsv, vision.COLOR_MASKS["red"])
+    result = vision._best_contour(mask, "red")
+    assert result is not None
+    _, area, cx, cy = result
+    assert area > vision.MIN_BLOB_AREA["red"]
+    assert abs(cx - _CX) <= 5
+    assert abs(cy - _CY) <= 5
+
+
+def test_best_contour_below_threshold_returns_none():
+    hsv = _hsv_frame_with_blob(5, 200, 200, _CX, _CY, _R_SMALL)
+    mask = vision._build_mask(hsv, vision.COLOR_MASKS["red"])
+    assert vision._best_contour(mask, "red") is None
+
+
+def test_best_contour_empty_mask():
+    mask = np.zeros((_TEST_H, _TEST_W), dtype=np.uint8)
+    assert vision._best_contour(mask, "red") is None
+
+
+def test_best_contour_prefers_larger_area():
+    hsv = _hsv_frame_with_blob(5, 200, 200, 200, 100, _R_BIG)
+    cv2.circle(hsv, (700, 400), _R_BIG + 30, (5, 200, 200), -1)
+    mask = vision._build_mask(hsv, vision.COLOR_MASKS["red"])
+    result = vision._best_contour(mask, "red")
+    assert result is not None
+    _, _, cx, _ = result
+    assert cx > 500
+
+
+def test_detect_block_none_frame():
+    with patch("fp.vision.capture_frame", return_value=None):
+        assert vision.detect_block("red") is None
+
+
+def test_detect_block_black_frame():
+    frame = np.zeros((_TEST_H, _TEST_W, 3), dtype=np.uint8)
+    with patch("fp.vision.capture_frame", return_value=frame):
+        assert vision.detect_block("red") is None
+
+
+def test_detect_block_red_blob():
+    frame = _bgr_frame_with_blob(5, 200, 200, _CX, _CY, _R_BIG)
+    with patch("fp.vision.capture_frame", return_value=frame):
+        result = vision.detect_block("red")
+    assert result is not None
+    assert result.label == "red"
+    assert abs(result.cx - _CX) <= 5
+    assert result.area > vision.MIN_BLOB_AREA["red"]
+
+
+def test_detect_block_blue_blob():
+    frame = _bgr_frame_with_blob(100, 200, 200, _CX, _CY, 100)
+    with patch("fp.vision.capture_frame", return_value=frame):
+        result = vision.detect_block("blue")
+    assert result is not None
+    assert result.label == "blue"
+
+
+def test_detect_block_green_blob():
+    frame = _bgr_frame_with_blob(55, 150, 180, _CX, _CY, _R_BIG)
+    with patch("fp.vision.capture_frame", return_value=frame):
+        result = vision.detect_block("green")
+    assert result is not None
+    assert result.label == "green"
+
+
+def test_detect_block_wrong_color_returns_none():
+    frame = _bgr_frame_with_blob(5, 200, 200, _CX, _CY, _R_BIG)
+    with patch("fp.vision.capture_frame", return_value=frame):
+        assert vision.detect_block("blue") is None
+
+
+def test_detect_block_unknown_color_returns_none():
+    frame = _bgr_frame_with_blob(5, 200, 200, _CX, _CY, _R_BIG)
+    with patch("fp.vision.capture_frame", return_value=frame):
+        assert vision.detect_block("purple") is None
+
+
+def test_build_mask_green_blob_hits():
+    hsv = _hsv_frame_with_blob(55, 200, 200, _CX, _CY, _R_BIG)
+    mask = vision._build_mask(hsv, vision.COLOR_MASKS["green"])
+    assert mask[_CY, _CX] > 0
+
+
+def test_detect_all_colors_returns_all_color_keys():
+    frame = np.zeros((_TEST_H, _TEST_W, 3), dtype=np.uint8)
+    with patch("fp.vision.capture_frame", return_value=frame):
+        result = vision.detect_all_colors()
+    assert set(result.keys()) == {"red", "blue", "green"}
+
+
+def test_detect_all_colors_all_none_for_empty_frame():
+    frame = np.zeros((_TEST_H, _TEST_W, 3), dtype=np.uint8)
+    with patch("fp.vision.capture_frame", return_value=frame):
+        result = vision.detect_all_colors()
+    assert all(v is None for v in result.values())
+
+
+def test_detect_all_colors_returns_detection_for_red_blob():
+    frame = _bgr_frame_with_blob(5, 200, 200, _CX, _CY, _R_BIG)
+    with patch("fp.vision.capture_frame", return_value=frame):
+        result = vision.detect_all_colors()
+    assert result["red"] is not None
+    assert result["red"].label == "red"
+    assert result["blue"] is None
+    assert result["green"] is None
