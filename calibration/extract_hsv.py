@@ -1,34 +1,12 @@
-#!/usr/bin/env python3
-"""Polygon-masked HSV calibration.
-
-Runs on the dev machine (needs a display). For each `auto_*.jpg` in
-`calibration/photos/`, the user draws one polygon per colour around the clean
-interior of each block. Polygons are persisted next to the source photo as
-`<image>.polygons.json` so we never re-mask the same image twice.
-
-Workflow:
-  1. Drop new auto_*.jpg into calibration/photos/ (full-res Pi captures).
-  2. python3 calibration/extract_hsv.py
-     - Any photo without a cached polygon set opens an interactive window.
-     - Click polygon vertices; Enter to close (>= 3 points).
-     - Backspace undoes the last point. R resets the current polygon.
-     - S skips the current colour for this photo (block not in frame).
-     - Q exits early; already-saved polygons persist.
-  3. After all photos are masked, the script pools every polygon-interior
-     HSV pixel across all photos, computes a robust range per colour, prints
-     a copy-paste-ready COLOR_MASKS block, and writes mask_<colour>.jpg
-     previews next to the source photos.
-
-Polygon masks are clean samples (interior pixels only), so we trust the
-observed range and pad each channel with a small absolute delta:
-  H: [min - HUE_PAD, max + HUE_PAD]
-  S: [max(min - SAT_PAD, 0), min(max + SAT_PAD, 255)]
-  V: [max(min - VAL_PAD, 0), min(max + VAL_PAD, 255)]
-
-Red hue wraps around 0/180 in OpenCV. We detect bimodality (a real wrap)
-by checking the gap between consecutive sorted hues - if the largest gap
-exceeds WRAP_GAP_THRESHOLD, we split into two ranges.
-"""
+# Final Project Calibration - Polygon HSV Extractor
+# Interactive tool: draw polygon masks over block color regions in
+# calibration/photos/auto_*.jpg to sample clean interior HSV pixels.
+# Pools samples across all photos and prints a ready-to-paste COLOR_MASKS
+# block for fp/vision.py. Polygon sets are cached as .polygons.json files.
+# Controls: L-click=add  Enter=close  Backspace=undo  R=reset  S=skip  Q=quit
+#
+# Requirements: opencv-python, numpy
+# Usage: python calibration/extract_hsv.py
 
 import glob
 import json
@@ -51,7 +29,7 @@ DISPLAY_MAX_WIDTH = 1400  # downscale large Pi photos to fit on a laptop screen
 
 WINDOW_NAME = "extract_hsv"
 
-# Render the on-screen polygon in each colour's natural BGR.
+# Render the on-screen polygon in each color's natural BGR.
 COLOR_BGR = {
     "red":   (0,   0,   255),
     "blue":  (255, 0,   0),
@@ -157,7 +135,7 @@ def _hue_bounds(h: np.ndarray, name: str
                 ) -> List[Tuple[int, int]]:
     """Return one or two (lo, hi) hue intervals covering the sample.
 
-    For non-red colours, single contiguous interval [min - pad, max + pad].
+    For non-red colors, single contiguous interval [min - pad, max + pad].
     For red, detect bimodality (a real 0/180 wrap) by finding the largest
     gap between consecutive sorted hue values; if it exceeds the threshold,
     split into two intervals at the gap.

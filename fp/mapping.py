@@ -1,3 +1,8 @@
+# Final Project - Path Tracking and Visualization
+# PathTracker records (x, y) waypoints during a run and renders a
+# color-coded multi-segment path overlaid on the arena layout.
+#
+# Requirements: matplotlib, colorsys
 import colorsys
 import logging
 import random

@@ -1,9 +1,9 @@
-"""
-ultrasonic_test.py - Print live ultrasonic distance readings.
-
-Usage (on the Raspberry Pi):
-    python calibration/ultrasonic_test.py
-"""
+# Final Project Calibration - Ultrasonic Distance Test
+# Prints live HC-SR04 distance readings via the HAL, including the
+# robot-center-corrected distance and wall-proximity flag.
+#
+# Requirements: fp.hal (pigpio), fp.localization
+# Usage: python calibration/ultrasonic_test.py
 
 import sys
 import os
@@ -22,7 +22,7 @@ _POLL_INTERVAL_S = 0.1
 
 def main():
     hal.init()
-    print("HAL initialised.")
+    print("HAL initialized.")
 
     if not hal.start_ultrasonic():
         print("ERROR: Ultrasonic sensor did not become ready.")

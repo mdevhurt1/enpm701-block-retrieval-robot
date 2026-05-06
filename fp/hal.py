@@ -1,3 +1,10 @@
+# Final Project - Hardware Abstraction Layer (HAL)
+# Wraps all pigpio GPIO access: L298N H-bridge motors, wheel encoders,
+# HC-SR04 ultrasonic sensor, BNO055 IMU over serial, and servo gripper.
+# Module-level functions delegate to a process-singleton Robot instance.
+#
+# Requirements: pigpio, pyserial, threading
+# Usage: sudo pigpiod && python main.py
 import logging
 import pigpio
 import serial
@@ -75,7 +82,6 @@ class Robot:
         self._imu_ready             = threading.Event()
         self._imu_stop              = threading.Event()
         self._imu_thread            = None
-        self._sample_n              = 0
 
     def _on_encoder(self, gpio_pin: int, level: int, tick: int) -> None:
         if gpio_pin == _FRONT_LEFT_ENCODER_PIN:
@@ -147,14 +153,14 @@ class Robot:
         elif left_direction == -1:
             self._pi.set_PWM_dutycycle(_LEFT_REVERSE, left_duty)
         else:
-            logger.info(f"[HAL] Unkown direction {left_direction} requested for the left wheels with duty {left_duty}")
+            logger.info(f"[HAL] Unknown direction {left_direction} requested for the left wheels with duty {left_duty}")
 
         if right_direction == +1:
             self._pi.set_PWM_dutycycle(_RIGHT_FORWARD, right_duty)
         elif right_direction == -1:
             self._pi.set_PWM_dutycycle(_RIGHT_REVERSE, right_duty)
         else:
-            logger.info(f"[HAL] Unkown direction {right_direction} requested for the right wheels with duty {right_duty}")
+            logger.info(f"[HAL] Unknown direction {right_direction} requested for the right wheels with duty {right_duty}")
 
     def motors_forward(self, duty: float = PWM_DUTY_STRAIGHT) -> None:
         self.stop_motors()
@@ -208,6 +214,9 @@ class Robot:
             self._ultrasonic_thread.join(timeout=2.0)
 
     def _ping(self) -> None:
+        # HC-SR04 protocol: pull TRIG high for 10 us, then wait for ECHO to go
+        # high. Measure how long ECHO stays high; distance_cm = pulse_s * 17150
+        # (speed of sound 343 m/s, round trip halved: 343*100/2 = 17150).
         while not self._ultrasonic_stop.is_set():
             self._pi.write(_TRIG, 0)
             time.sleep(0.01)
@@ -215,13 +224,13 @@ class Robot:
             time.sleep(0.00001)
             self._pi.write(_TRIG, 0)
 
-            echo_recieved = False
+            echo_received = False
             t0 = time.monotonic()
             while self._pi.read(_ECHO) == 0:
                 if time.monotonic() - t0 > _ULTRASONIC_TIMEOUT:
                     break
                 else:
-                    echo_recieved = True
+                    echo_received = True
 
             pulse_start = time.monotonic()
             while self._pi.read(_ECHO) == 1:
@@ -230,7 +239,7 @@ class Robot:
 
             pulse_end = time.monotonic()
             
-            if not echo_recieved:
+            if not echo_received:
                 continue
 
             distance_cm = round((pulse_end - pulse_start) * 17150, 2)
@@ -248,10 +257,8 @@ class Robot:
         return self._ultrasonic_readings[-1]
 
     def get_recent_ultrasonic_readings(self) -> list:
-        ret = None
         with self._ultrasonic_lock:
-            ret = list(self._ultrasonic_readings)
-        return ret
+            return list(self._ultrasonic_readings)
 
     def is_ultrasonic_healthy(self, stale_threshold_s: float = 0.5) -> bool:
         with self._ultrasonic_lock:
@@ -271,19 +278,21 @@ class Robot:
                     heading = float(line)
                     if 0.0 <= heading < 360.0:
                         with self._heading_lock:
+                            # Record the raw heading at startup as an offset so
+                            # get_heading() returns 0 for the robot's initial
+                            # orientation regardless of absolute compass north.
                             if self._imu_initial_heading is None:
                                 self._imu_initial_heading = heading
                             self._current_heading = (heading - self._imu_initial_heading) % 360
                             self._last_heading_time = time.monotonic()
                         self._imu_ready.set()
-                        self._sample_n += 1
                 else:
                     time.sleep(0.005)
             except serial.SerialException as e:
                 logger.info(f"[HAL] Serial error: {e}")
                 time.sleep(0.5)
             except ValueError:
-                        pass
+                pass
             except Exception as e:
                 logger.info(f"[HAL] Unexpected error: {e}")
 
@@ -353,6 +362,9 @@ class Robot:
         self._imu_initial_heading = heading_offset
 
     def recalibrate_heading(self, known_heading: float) -> None:
+        # Recover the absolute IMU reading, then reset the offset so that
+        # known_heading (a cardinal direction from wall-fit geometry) becomes
+        # the new reference. Called after a confirmed wall-perpendicular pivot.
         with self._heading_lock:
             raw = (self._current_heading + self._imu_initial_heading) % 360
             self._imu_initial_heading = (raw - known_heading) % 360

@@ -1,9 +1,10 @@
-#!/usr/bin/env python3
-"""Build a timelapse video from time_lapse/ frames with block detections overlaid.
-
-Reads every saved frame, runs HSV detection for all colors, annotates
-contours/centroids/labels, and writes the result to calibration/photos/timelapse.mp4.
-"""
+# Final Project Calibration - Timelapse Builder
+# Reads every frame from time_lapse/, runs HSV detection for all colors,
+# draws annotated contours and centroids, and writes the result to
+# calibration/photos/timelapse.mp4.
+#
+# Requirements: opencv-python, fp.vision
+# Usage: python calibration/make_timelapse.py
 
 import os
 import sys

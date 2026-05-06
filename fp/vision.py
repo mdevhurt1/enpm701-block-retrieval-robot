@@ -1,5 +1,9 @@
-# Camera capture and HSV blob detection.
-# COLOR_MASKS thresholds were tuned under arena lighting - do not retune in simulation.
+# Final Project - Camera Capture and HSV Block Detection
+# Picamera2 video capture with background frame caching and per-second
+# timelapse recording. HSV masks detect red, green, and blue blocks via
+# contour filtering; thresholds were tuned under arena lighting.
+#
+# Requirements: picamera2, libcamera, opencv-python, numpy
 import logging
 import os
 import threading
@@ -18,7 +22,7 @@ logger = logging.getLogger(__name__)
 SENSOR_RESOLUTION   = (1280, 720)
 CAMERA_HFOV_DEG     = 41.2
 
-# HSV ranges per colour, OR'd. Two ranges for red (hue wraps).
+# HSV ranges per color, OR'd. Two ranges for red (hue wraps).
 COLOR_MASKS = {
     "red": [
                 (165, 100, 80, 179, 235, 255),
@@ -134,7 +138,6 @@ def capture_frame() -> np.ndarray:
 
         _last_frame_time = now
 
-        # camera is mounted rotated 90 degrees
         _last_frame = _picam2.capture_array()
         _last_frame = cv2.rotate(_last_frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
 
@@ -186,8 +189,6 @@ def _stop_cache_warmer() -> None:
     _warmer_thread = None
     logger.info("[VISION] cache warmer stopped")
 
-
-# Detection
 
 def _build_mask(hsv: np.ndarray, ranges) -> np.ndarray:
     combined = np.zeros(hsv.shape[:2], dtype=np.uint8)

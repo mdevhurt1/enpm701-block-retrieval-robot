@@ -1,4 +1,4 @@
-# ENPM 701 Grand Challenge — Final Project
+# ENPM 701 Grand Challenge -- Final Project
 
 ## Overview
 
@@ -24,26 +24,28 @@ python -m fp          # equivalent
 
 ```
 final_project/
-├── main.py
-├── fp/
-│   ├── arena.py        # arena geometry, zone bounds, coordinate math
-│   ├── cli.py          # startup, hardware init, run loop
-│   ├── fsm.py          # mission state machine
-│   ├── hal.py          # pigpio GPIO, motors, encoders, ultrasonic, IMU, servo
-│   ├── localization.py # pose tracking, wall-clearance checks
-│   ├── mapping.py      # path recording and PNG visualization
-│   ├── motion.py       # drive, pivot, localize, approach, grab, release
-│   ├── search.py       # grid-based search planner, 360-degree scan
-│   └── vision.py       # camera capture, HSV blob detection
-└── calibration/
-    ├── calibrate_camera.py     # compute and save camera intrinsics
-    ├── blob_size.py            # display blob area readings live
-    ├── encoder_test.py         # verify encoder counts per revolution
-    ├── extract_hsv.py          # extract HSV range from a saved image
-    ├── hsv_tuner_static.py     # tune HSV masks on a JPEG without hardware
-    ├── make_timelapse.py       # stitch timelapse frames from a run
-    ├── ultrasonic_test.py      # print live ultrasonic readings
-    └── vision_sample.py        # capture and display a single frame
+|-- main.py
+|-- fp/
+|   |-- arena.py        # arena geometry, zone bounds, coordinate math
+|   |-- cli.py          # startup, hardware init, run loop
+|   |-- fsm.py          # mission state machine
+|   |-- hal.py          # pigpio GPIO, motors, encoders, ultrasonic, IMU, servo
+|   |-- localization.py # pose tracking, wall-clearance checks
+|   |-- mapping.py      # path recording and PNG visualization
+|   |-- motion.py       # drive, pivot, localize, approach, grab, release
+|   |-- search.py       # grid-based search planner, 360-degree scan
+|   \-- vision.py       # camera capture, HSV blob detection
+\-- calibration/
+    |-- calibrate_camera.py     # compute and save camera intrinsics (checkerboard)
+    |-- blob_size.py            # display blob area and centroid readings live
+    |-- capture_full_res.py     # capture full-res frames under every AWB mode
+    |-- encoder_test.py         # verify encoder counts per revolution
+    |-- extract_hsv.py          # polygon-masked HSV range extraction
+    |-- hsv_tuner.py            # live trackbar HSV tuner (requires Pi camera)
+    |-- hsv_tuner_static.py     # trackbar HSV tuner on a saved JPEG
+    |-- make_timelapse.py       # stitch timelapse frames with detection overlay
+    |-- ultrasonic_test.py      # print live ultrasonic readings
+    \-- vision_sample.py        # capture frame, detect blocks, save masks
 ```
 
 ## Running tests

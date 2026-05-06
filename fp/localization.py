@@ -1,3 +1,8 @@
+# Final Project - Pose Tracking and Localizer
+# Pose dataclass holds (x_cm, y_cm, heading). Localizer applies encoder
+# and ultrasonic motion updates, wall-clearance checks, and path recording.
+#
+# Requirements: math, dataclasses, fp.arena
 from dataclasses import dataclass
 import math
 

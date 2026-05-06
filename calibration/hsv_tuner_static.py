@@ -1,21 +1,10 @@
-"""
-hsv_tuner_static.py - Interactive HSV colour-mask calibration on a static image.
-
-Works on a JPEG instead of a live camera feed - useful for tuning on a laptop
-without a Pi or camera attached.
-
-Usage:
-    python calibration/hsv_tuner_static.py [image_path]
-
-Defaults to calibration/photos/awb_auto.jpg when no path is given.
-
-Controls:
-  - Adjust the six trackbars (H_MIN, S_MIN, V_MIN, H_MAX, S_MAX, V_MAX)
-    until the target block colour shows as solid white in the "Mask" window
-    and everything else is black.
-  - Press 'p' to print the current values to the terminal (copy into vision.py).
-  - Press 'q' to quit.
-"""
+# Final Project Calibration - Static Image HSV Trackbar Tuner
+# Same six-trackbar interface as hsv_tuner.py but operates on a saved JPEG
+# instead of a live camera feed. Useful for tuning on a laptop without a Pi.
+# Defaults to calibration/photos/awb_auto.jpg when no path is given.
+#
+# Requirements: opencv-python, numpy
+# Usage: python calibration/hsv_tuner_static.py [image_path]
 
 import sys
 import os
@@ -66,7 +55,7 @@ def main():
         cv2.createTrackbar(name, "Trackbars", val, limit, nothing)
 
     print(f"Image: {image_path}")
-    print("Adjust trackbars to isolate your colour, then press 'p' to print values, 'q' to quit.")
+    print("Adjust trackbars to isolate your color, then press 'p' to print values, 'q' to quit.")
 
     while True:
         h_min = cv2.getTrackbarPos("H_MIN", "Trackbars")

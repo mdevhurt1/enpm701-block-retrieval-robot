@@ -1,13 +1,9 @@
-"""
-encoder_test.py - Verify encoder counts for one full revolution per side and direction.
-
-Usage (on the Raspberry Pi):
-    python calibration/encoder_test.py
-
-Spins each motor side forward one revolution then backward one revolution,
-one (side, direction) pair at a time. Prints live encoder counts while the
-move is in progress.
-"""
+# Final Project Calibration - Encoder Revolution Test
+# Spins each motor side one revolution forward and one revolution reverse,
+# printing live encoder counts to verify COUNTS_PER_REVOLUTION.
+#
+# Requirements: fp.hal (pigpio)
+# Usage: python calibration/encoder_test.py
 
 import sys
 import os
@@ -45,7 +41,7 @@ def _run_until_revolution(label: str, read_encoder, start_count: int, set_motors
 
 def main():
     hal.init()
-    print("HAL initialised.")
+    print("HAL initialized.")
     print(f"One revolution = {_COUNTS_PER_REVOLUTION} counts\n")
 
     try:

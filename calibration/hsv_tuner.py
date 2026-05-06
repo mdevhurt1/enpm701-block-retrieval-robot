@@ -1,20 +1,10 @@
-"""
-hsv_tuner.py - Interactive HSV colour-mask calibration tool.
-
-Adapted from homework04/colorpicker.py.
-
-Usage (on the Raspberry Pi with a display):
-    python calibration/hsv_tuner.py
-
-Controls:
-  - Adjust the six trackbars (H_MIN, S_MIN, V_MIN, H_MAX, S_MAX, V_MAX)
-    until the target block colour shows as solid white in the "Mask" window
-    and everything else is black.
-  - Press 'p' to print the current values to the terminal (copy into vision.py).
-  - Press 'q' to quit.
-
-Run once per colour (red, green, blue) under actual arena lighting.
-"""
+# Final Project Calibration - Live HSV Trackbar Tuner
+# Streams from the Pi camera while six trackbars (H/S/V min/max) control
+# the color mask in real time. Press 'p' to print values for vision.py,
+# 'q' to quit. Run once per color under actual arena lighting.
+#
+# Requirements: picamera2, opencv-python, numpy
+# Usage: python calibration/hsv_tuner.py
 
 import cv2
 import numpy as np
@@ -59,7 +49,7 @@ def main():
         limit = 179 if name == "H_MAX" or name == "H_MIN" else 255
         cv2.createTrackbar(name, "Trackbars", val, limit, nothing)
 
-    print("Adjust trackbars to isolate your colour, then press 'p' to print values, 'q' to quit.")
+    print("Adjust trackbars to isolate your color, then press 'p' to print values, 'q' to quit.")
 
     while True:
         bgr  = picam2.capture_array()

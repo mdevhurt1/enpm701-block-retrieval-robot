@@ -8,9 +8,9 @@
  *   BNO055 VIN -> 3.3 V or 5 V (check breakout specs)
  *   BNO055 GND -> GND
  *
- * Output (9600 baud, USB serial):
+ * Output (115200 baud, USB serial):
  *   One float per line, e.g.:  "123.45\n"
- *   This matches the format expected by robot.py::_imu_reader().
+ *   This matches the format expected by hal.py::_imu_reader().
  *
  * Dependencies (install via Arduino Library Manager):
  *   - Adafruit BNO055

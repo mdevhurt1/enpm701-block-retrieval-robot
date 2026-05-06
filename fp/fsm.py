@@ -1,3 +1,9 @@
+# Final Project - Mission State Machine
+# Seven-state FSM (LOCALIZE, SEARCH, APPROACH, GRAB, CARRY_HOME, DROP,
+# STEP_OUT) that autonomously collects colored blocks in color-order
+# (red, green, blue) and delivers them to the NW collection zone.
+#
+# Requirements: fp.arena, fp.motion, fp.search, fp.vision, fp.localization
 import logging
 import time
 from enum import Enum
@@ -107,9 +113,9 @@ class FSM:
 
             # Skip the ~22 s scan_360 when this cell is already low-quality
             # (heavily visited) AND has no cached sighting *of the current
-            # target colour*. A target-colour sighting forces a re-scan even
+            # target color*. A target-color sighting forces a re-scan even
             # on a spent cell - the block we previously saw may still be
-            # there. Sightings of other colours don't override; they aren't
+            # there. Sightings of other colors don't override; they aren't
             # informative for the current search.
             quality = self.planner.get_search_quality(pose_x, pose_y)
             has_sighting = self.planner.has_sighting_in_cell(pose_x, pose_y, target)
@@ -147,7 +153,7 @@ class FSM:
 
             return State.SEARCH
         except TargetDetected as e:
-            logger.info(f"[FSM] SEARCH target detected during dearch {e.detection.area:.1f}")
+            logger.info(f"[FSM] SEARCH target detected during search {e.detection.area:.1f}")
             return State.APPROACH
 
     def _on_approach(self) -> State:
@@ -198,7 +204,7 @@ class FSM:
     def _on_drop(self) -> State:
         target = self._target_color()
         in_zone = arena.in_collection_zone(self.localizer.pose.x_cm + COLLECTION_ZONE_MARGIN,
-                                           self.localizer.pose.y_cm + - COLLECTION_ZONE_MARGIN)
+                                           self.localizer.pose.y_cm - COLLECTION_ZONE_MARGIN)
         if in_zone:
             logger.info(f"[FSM] DROP dropping {target} block in zone at ({self.localizer.pose.x_cm:.1f}, {self.localizer.pose.y_cm:.1f}, {self.localizer.pose.heading:.1f})")
             self.delivered += 1

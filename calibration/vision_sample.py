@@ -1,6 +1,10 @@
-#!/usr/bin/env python3
-"""Capture a frame using vision.py, detect all blocks, and save the
-annotated image plus individual color masks to the photos/ directory."""
+# Final Project Calibration - Vision Sample Capture
+# Captures one frame via fp/vision.py, runs detection for all block colors,
+# and saves the raw frame, annotated detections, and per-color masks to
+# calibration/photos/.
+#
+# Requirements: fp.vision (Picamera2, opencv-python), opencv-python
+# Usage: python calibration/vision_sample.py
 
 import os
 import sys

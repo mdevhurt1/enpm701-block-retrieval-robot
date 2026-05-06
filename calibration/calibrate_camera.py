@@ -1,28 +1,11 @@
-"""
-calibrate_camera.py - Offline camera intrinsic calibration tool.
-
-Uses a printed checkerboard target to compute the camera matrix K (3x3)
-and lens distortion coefficients, then saves them to camera_matrix.npz.
-
-Usage (on the Raspberry Pi, with checkerboard visible to camera):
-    python calibration/calibrate_camera.py
-
-Controls:
-    SPACE  - capture current frame as a calibration image
-    c      - compute calibration from captured images (need >= 15)
-    s      - save calibration to camera_matrix.npz and quit
-    q      - quit without saving
-
-Output:
-    calibration/camera_matrix.npz  (arrays: camera_matrix, dist_coeffs)
-
-Checkerboard:
-    Default: 10x7 inner corners (11x8 squares printed on A4/Letter).
-    Edit BOARD_W / BOARD_H below if your board differs.
-    Square size is only needed for metric 3D reconstruction; for this
-    project we only need the intrinsic matrix for undistortion and PnP,
-    so SQUARE_SIZE_MM is informational only.
-"""
+# Final Project Calibration - Camera Intrinsic Calibration
+# Interactive checkerboard tool that computes the camera matrix K (3x3) and
+# lens distortion coefficients, then saves them to calibration/camera_matrix.npz.
+# Controls: SPACE=capture  c=compute  s=save+quit  q=quit  (need >= 15 images)
+# Default checkerboard: 10x7 inner corners (11x8 squares on A4/Letter).
+#
+# Requirements: picamera2, opencv-python, numpy
+# Usage: python calibration/calibrate_camera.py
 
 import os
 import sys

@@ -1,4 +1,9 @@
-# Arena geometry. x east, y north, origin SW corner. Heading 0=north, CW positive.
+# Final Project - Arena Geometry
+# Constants and helpers for the 7 x 7 ft arena coordinate system.
+# Origin at the SW corner; x increases east, y increases north.
+# Heading 0 = north, increasing clockwise.
+#
+# Requirements: math
 import math
 
 # Arena 7 ft x 7 ft

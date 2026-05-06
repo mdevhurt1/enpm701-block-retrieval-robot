@@ -1,3 +1,9 @@
+# Final Project - Grid Search Planner
+# Builds a lawnmower-order grid covering the safe arena area, tracks
+# visit counts and cached block sightings, and executes 360-degree scans
+# to locate target-color blocks while avoiding the collection zone.
+#
+# Requirements: fp.arena, fp.hal, fp.motion, fp.vision, fp.localization
 import logging
 import math
 
@@ -140,7 +146,7 @@ class SearchPlanner:
                  skip_collection_zone: bool = True
                  ) -> vision.DetectionResult:
         self.mark_visited(localizer.pose.x_cm, localizer.pose.y_cm)
-        # Drop any stale target-colour sighting at the current cell before
+        # Drop any stale target-color sighting at the current cell before
         # scanning. The scan is about to give us ground truth for this cell,
         # so a prior sighting (which may point at a block that has since
         # been pushed elsewhere) shouldn't survive to lure us back here on
@@ -195,12 +201,12 @@ class SearchPlanner:
     def has_sighting_in_cell(self, x: float, y: float, color: str) -> bool:
         """True if `color`'s sighting list has an entry inside the cell containing (x, y).
 
-        A cached sighting is intelligence that a block of this colour was
+        A cached sighting is intelligence that a block of this color was
         visible from this cell during a prior scan. The FSM uses this to
         override the skip-low-quality path in _on_search: even when the
         cell would otherwise be skipped as already-searched, a sighting
         of the *current target* forces a re-scan because the block we
-        previously saw may still be there. Sightings of other colours
+        previously saw may still be there. Sightings of other colors
         do not override the skip - they're irrelevant to the current
         search and the cell stays "spent" from the planner's view.
         """

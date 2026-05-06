@@ -1,16 +1,10 @@
-"""
-blob_size.py - Live colour-detection probe for blob-area calibration.
-
-Usage (on the Raspberry Pi):
-    python calibration/blob_size.py
-
-Continuously captures frames and prints the detected area and centroid for
-every colour tracked by the fp package.  Press Ctrl+C to stop.
-
-Thresholds applied: the same HSV masks and MIN_BLOB_AREA filters used by
-detect_all_colors() in fp/vision.py.  A colour shows 'none' when no blob
-exceeds MIN_BLOB_AREA.
-"""
+# Final Project Calibration - Live Blob Area Probe
+# Continuously captures frames and prints the detected blob area and centroid
+# for every color tracked by fp/vision.py. Press Ctrl+C to stop.
+# Applies the same HSV masks and MIN_BLOB_AREA filters as detect_all_colors().
+#
+# Requirements: fp.vision (Picamera2, libcamera, opencv-python)
+# Usage: python calibration/blob_size.py
 
 import sys
 import os

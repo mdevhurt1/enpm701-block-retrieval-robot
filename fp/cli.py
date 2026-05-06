@@ -1,3 +1,10 @@
+# Final Project - Mission CLI Entry Point
+# Initializes all hardware (HAL, IMU, ultrasonic, camera), sets the robot's
+# starting pose at the SW launch zone center, then runs the FSM loop.
+# Saves a timestamped path plot to disk on exit.
+#
+# Requirements: fp.hal, fp.vision, fp.fsm, fp.localization, fp.mapping
+# Usage: python main.py  (or: python -m fp)
 import logging
 import sys
 import datetime
@@ -11,7 +18,7 @@ from fp.mapping import PathTracker
 
 logger = logging.getLogger(__name__)
 
-def _mission_main(argv: list) -> int:
+def _mission_main() -> int:
     tracker = None
     try:
         hal.init()
@@ -65,9 +72,8 @@ def _mission_main(argv: list) -> int:
         except Exception:
             pass
 
-def main(argv: list = None) -> int:
-    argv = list(argv) if argv is not None else sys.argv[1:]
-    return _mission_main(argv)
+def main() -> int:
+    return _mission_main()
 
 if __name__ == "__main__":
     sys.exit(main())

@@ -1,3 +1,8 @@
+# Final Project - Motion Control
+# Encoder-counted straight drives with IMU heading hold, PID pivot-to-heading,
+# wall-fit ultrasonic localization, visual block approach, and grab/release.
+#
+# Requirements: fp.hal, fp.vision, fp.localization, fp.arena
 import logging
 import math
 import time
@@ -71,8 +76,6 @@ APPROACH_LARGEST_STEP       = 20.0
 VISUAL_APPROACH_TOLERANCE   = 1.0
 VISUAL_APPROACH_STEER_GAIN = 0.85
 
-# Internal helper functions
-
 def _drive(localizer: Localizer, distance_cm: float, initial_heading: float, 
            direction: int, target: str = None, visual_approach: bool = False, 
            carrying_block: bool = False) -> bool:
@@ -134,33 +137,33 @@ def _drive(localizer: Localizer, distance_cm: float, initial_heading: float,
                     hal.stop_motors()
 
                     if visual_approach:
-                        backoff_result = move_reverse(localizer)
+                        move_reverse(localizer)
 
                     localize(localizer, force=localizer.pose.heading)
 
                     if not visual_approach:
-                        backoff_result = move_reverse(localizer)
+                        move_reverse(localizer)
 
                     return False
 
                 if not arena.in_collection_zone(localizer.pose.x_cm, localizer.pose.y_cm):
                     detections = vision.detect_all_colors()
                     target_detection = detections.get(target)
-                    
+
+                    # Raise TargetDetected when the target block fills the frame
+                    # (hands off to the approach state). For any other block that
+                    # is larger than the target and too close, abort and reverse
+                    # so we don't blindly drive over it.
                     for color in list(detections):
                         if color == target:
                             if target_detection is None:
                                 continue
-                            
                             if carrying_block:
                                 continue
-                            
                             if visual_approach:
                                 continue
-
                             if target_detection.block_too_close:
                                 raise TargetDetected(target_detection)
-                            
                             continue
 
                         detection = detections.get(color)
@@ -173,7 +176,7 @@ def _drive(localizer: Localizer, distance_cm: float, initial_heading: float,
                         if detection.block_too_close:
                             logger.info(f"[MOTION] _drive camera abort: {color} block too close, size={detection.area:.1f}")
                             hal.stop_motors()
-                            backoff_result = move_reverse(localizer)
+                            move_reverse(localizer)
                             return False
 
             if current_total > last_total:
@@ -188,6 +191,8 @@ def _drive(localizer: Localizer, distance_cm: float, initial_heading: float,
             corr = max(-MAX_HEADING_CORRECTION,
                        min(MAX_HEADING_CORRECTION, HEADING_HOLD_KP * error))
 
+            # Invert correction sign for reverse so the same error direction
+            # steers the robot the correct way regardless of travel direction.
             corr *= direction
 
             left_duty = max(0.0, min(100.0, base_duty + corr))
@@ -256,7 +261,7 @@ def _pivot_to_heading(localizer: Localizer, target_heading: float) -> bool:
 def move_reverse(localizer: Localizer) -> bool:
     distance_cm = REVERSE_DISTANCE_CM
 
-    for i in range(REVERSE_REPLAN_ATTEMPTS):
+    for _ in range(REVERSE_REPLAN_ATTEMPTS):
         x, y = arena.apply_motion(localizer.pose.x_cm, localizer.pose.y_cm, -distance_cm, localizer.pose.heading)
         # Tighter validation than forward moves: shrink the safe envelope
         # by REVERSE_EXTRA_MARGIN_CM. Reverses run blind (no rear sensor)
@@ -277,7 +282,7 @@ def move_reverse(localizer: Localizer) -> bool:
 
 def pivot_to_heading(localizer: Localizer, target: float) -> bool:
     result = False
-    for i in range(MAX_PIVOT_ATTEMPTS):
+    for _ in range(MAX_PIVOT_ATTEMPTS):
         if abs(((target - localizer.pose.heading) + 180) % 360 - 180) <= HEADING_TOLERANCE:
             return True
         result = _pivot_to_heading(localizer, target)
@@ -350,7 +355,7 @@ def grab_block(localizer: Localizer, color: str) -> bool:
     det = vision.detect_block(target=color)
 
     if det is None or not det.within_reach:
-        logger.info(f"[MOTION] grap_block may have failed: {color} block not within reach after grab attempt at ({localizer.pose.x_cm:.1f}, {localizer.pose.y_cm:.1f})")
+        logger.info(f"[MOTION] grab_block may have failed: {color} block not within reach after grab attempt at ({localizer.pose.x_cm:.1f}, {localizer.pose.y_cm:.1f})")
         hal.gripper_open()
         return False
     

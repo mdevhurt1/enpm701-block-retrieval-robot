@@ -1,19 +1,10 @@
-#!/usr/bin/env python3
-"""Capture full-resolution images from the Pi camera under every AWB mode.
-
-Saves one image per mode so we get a true 1:1 comparison under identical
-lighting conditions (same session, same scene, same AE gain).
-
-AWB modes are standard libcamera presets, each targeting a known correlated
-color temperature (CCT):
-    Auto         - adaptive, lets the algorithm guess freely
-    Incandescent - ~2700 K, warm tungsten bulbs
-    Tungsten     - ~3000 K, slightly cooler tungsten
-    Fluorescent  - ~4000 K, cool white tube lights
-    Indoor       - ~4500 K, mixed indoor sources
-    Daylight     - ~5500 K, direct sunlight
-    Cloudy       - ~6500 K, overcast sky
-"""
+# Final Project Calibration - AWB Mode Image Comparison
+# Captures one full-resolution frame under each libcamera AWB preset
+# (Auto through Cloudy) and saves them to calibration/photos/ for
+# side-by-side color-balance comparison.
+#
+# Requirements: picamera2, libcamera, opencv-python
+# Usage: python calibration/capture_full_res.py
 
 import os
 import time
