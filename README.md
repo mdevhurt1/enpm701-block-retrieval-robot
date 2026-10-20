@@ -2,19 +2,35 @@
 
 ## Overview
 
-Autonomous robot that locates colored blocks (red, green, blue) in a 7x7 ft arena,
+Autonomous Raspberry Pi 4B robot that locates colored blocks (red, green, blue) in a 7x7 ft arena,
 picks them up, and delivers them to the NW collection zone. Starts from the SW launch
 zone. Uses pigpio for hardware-timed encoder counting and wall-proximity localization.
+
+## Results
+
+Recorded paths from two full runs (launch zone bottom left, collection zone top left):
+
+| Run 1 | Run 2 |
+|---|---|
+| ![Run 1 path](run_1.png) | ![Run 2 path](run_2.png) |
+
+Timelapses with detection overlay: [run 1](timelapse1.mp4), [run 2](timelapse2.mp4).
+
+## Hardware
+
+- `CAD/`: FreeCAD model and printable STL mounts (Pi, camera, gripper, H-bridge, ultrasonic, battery cage)
+- `Electrical/`: KiCad schematic and board layout
+- `arduino/imu_serial/`: Arduino sketch that streams IMU heading over serial
 
 ## Requirements
 
 - Raspberry Pi with pigpiod running (`sudo pigpiod`)
-- Python packages: `pip install -r requirements-dev.txt`
+- Dev and test packages: `pip install -r requirements-dev.txt`
+- On the Pi, also: `pigpio`, `picamera2` (with libcamera), and `pyserial`
 
 ## Running the mission
 
 ```bash
-# From final_project/
 sudo pigpiod          # start pigpio daemon if not running
 python main.py        # autonomous run
 python -m fp          # equivalent
@@ -23,7 +39,7 @@ python -m fp          # equivalent
 ## Package layout
 
 ```
-final_project/
+.
 |-- main.py
 |-- fp/
 |   |-- arena.py        # arena geometry, zone bounds, coordinate math
@@ -48,9 +64,10 @@ final_project/
     \-- vision_sample.py        # capture frame, detect blocks, save masks
 ```
 
+`tests/` holds the pytest suite; `scripts/verify.sh` runs the checks.
+
 ## Running tests
 
 ```bash
-cd final_project/
 python -m pytest tests/ -v
 ```
